@@ -1,0 +1,57 @@
+# systemd unit for NIEC Visa AI.
+#
+# Starts the app on boot, restarts it if it dies, and keeps its logs in
+# journalctl as well as the app's own logs/ folder.
+#
+# Install:
+#   sudo cp deploy/niec-visa-ai.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now niec-visa-ai
+#
+# Check:    sudo systemctl status niec-visa-ai
+# Logs:     sudo journalctl -u niec-visa-ai -f
+# Restart:  sudo systemctl restart niec-visa-ai
+
+[Unit]
+Description=NIEC Visa AI - student visa interview practice
+Documentation=file:/opt/niec-visa-ai/OPERATIONS.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=niec
+Group=niec
+WorkingDirectory=/opt/niec-visa-ai
+ExecStart=/usr/bin/node start.mjs
+
+# start.mjs already restarts a crashed child with backoff. This is the outer
+# net: if the supervisor itself dies, systemd brings the whole thing back.
+Restart=always
+RestartSec=5
+# Give up if it fails 5 times in 5 minutes - that is a real fault, and a
+# restart loop would only hide it. Check the logs when this trips.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+# .env is read by the app itself, so no EnvironmentFile line is needed.
+Environment=NODE_ENV=production
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=niec-visa-ai
+
+# Hardening. The app only needs to write its own folder.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/niec-visa-ai/database /opt/niec-visa-ai/logs /opt/niec-visa-ai/backups
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

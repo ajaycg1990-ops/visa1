@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>NIEC Visa AI - Practise your U.S. student visa interview</title>
+    <meta
+      name="description"
+      content="NIEC Visa AI runs realistic F-1 student visa mock interviews with a simulated consular officer, scores every answer, and coaches you to a stronger one."
+    />
+    <meta name="theme-color" content="#1290cf" />
+    <meta name="color-scheme" content="light dark" />
+
+    <link rel="icon" href="assets/niec-logo.png" />
+    <link rel="apple-touch-icon" href="assets/niec-logo.png" />
+    <link rel="stylesheet" href="styles.css" />
+
+    <!-- Runtime API configuration, served by frontend/server.mjs -->
+    <script src="runtime-config.js" defer></script>
+    <script src="app.js" type="module"></script>
+  </head>
+
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header" id="siteHeader">
+      <div class="shell header-inner">
+        <a class="brand" href="#/" aria-label="NIEC Visa AI home">
+          <img src="assets/niec-logo-wordmark.png" alt="" width="132" height="42" />
+          <span class="brand-sub">Visa AI</span>
+        </a>
+
+        <nav class="main-nav" id="mainNav" aria-label="Main"></nav>
+
+        <div class="header-actions">
+          <button class="icon-button" id="themeToggle" type="button" aria-label="Switch appearance" title="Switch appearance">
+            <span aria-hidden="true" id="themeIcon">◐</span>
+          </button>
+          <a class="icon-button bell" id="bellLink" href="#/notifications" aria-label="Notifications" hidden>
+            <span aria-hidden="true">🔔</span>
+            <span class="badge" id="unreadBadge" hidden>0</span>
+          </a>
+          <div class="header-auth" id="headerAuth"></div>
+          <button class="icon-button menu-toggle" id="menuToggle" type="button" aria-label="Menu" aria-expanded="false">
+            <span aria-hidden="true">☰</span>
+          </button>
+        </div>
+      </div>
+      <div class="mobile-nav" id="mobileNav" hidden></div>
+    </header>
+
+    <main id="main" class="app-main" tabindex="-1"></main>
+
+    <footer class="site-footer">
+      <div class="shell footer-grid">
+        <div>
+          <img class="footer-logo" src="assets/niec-logo-wordmark.png" alt="NIEC" width="120" height="38" />
+          <p class="footer-note">
+            Practise your U.S. student visa interview with a simulated consular officer before you face the real one.
+          </p>
+          <p class="tagline"><span>Your Future,</span> <span class="accent">Our Responsibility.</span></p>
+        </div>
+        <nav aria-label="Practice">
+          <h2>Practice</h2>
+          <a href="#/interview">Mock interview</a>
+          <a href="#/coach">Ask a question</a>
+          <a href="#/analytics">Your progress</a>
+          <a href="#/history">Interview history</a>
+        </nav>
+        <nav aria-label="Learn">
+          <h2>Learn</h2>
+          <a href="#/resources">Resource library</a>
+          <a href="#/resources/student-visa-guide">Student visa guide</a>
+          <a href="#/resources/common-mistakes">Common mistakes</a>
+          <a href="#/resources/business-visa">Business visa basics</a>
+        </nav>
+        <nav aria-label="Account">
+          <h2>Account</h2>
+          <a href="#/settings">Settings and privacy</a>
+          <a href="#/notifications">Notifications</a>
+          <a href="#/privacy">Privacy policy</a>
+          <a href="#/terms">Terms of use</a>
+        </nav>
+      </div>
+      <div class="shell footer-bottom">
+        <p>
+          Educational interview preparation only. NIEC Visa AI is not legal or immigration advice, is not affiliated
+          with the U.S. Department of State, and cannot guarantee a visa outcome.
+        </p>
+        <p class="copyright">&copy; <span id="year"></span> NIEC</p>
+      </div>
+    </footer>
+
+    <div class="toast-stack" id="toastStack" aria-live="polite" aria-atomic="false"></div>
+  </body>
+</html>

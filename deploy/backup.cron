@@ -1,0 +1,21 @@
+# Daily database backup for NIEC Visa AI.
+#
+# Install:
+#   sudo crontab -u niec -e
+# then paste the line below (adjust the path if you installed elsewhere).
+#
+# It runs at 03:15 server time, writes a consistent copy into backups/ and
+# keeps the newest 14. Output goes to logs/backup.log so a silent failure
+# leaves a trace.
+
+15 3 * * * cd /opt/niec-visa-ai && /usr/bin/node scripts/backup.mjs >> logs/backup.log 2>&1
+
+# IMPORTANT: a backup that lives only on this server is not a backup. Copy it
+# somewhere else too - another machine, object storage, anywhere off this box.
+# Example, once you have an rclone remote configured:
+#
+# 45 3 * * * /usr/bin/rclone copy /opt/niec-visa-ai/backups niec-backups:visa-ai --max-age 48h
+#
+# And remember: every backup is encrypted with DATA_ENCRYPTION_KEY from .env.
+# Store that key somewhere separate and safe. Without it these files cannot be
+# restored by anyone, including NIEC.

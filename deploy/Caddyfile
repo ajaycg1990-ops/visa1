@@ -1,0 +1,57 @@
+# Caddy configuration for NIEC Visa AI.
+#
+# Caddy gets HTTPS certificates automatically from Let's Encrypt and renews
+# them, which matters here for two reasons: passwords must not cross the
+# internet in clear text, and browsers refuse microphone access on plain HTTP -
+# without HTTPS the voice half of the product silently stops working.
+#
+# Install:  sudo cp Caddyfile /etc/caddy/Caddyfile
+#           sudo systemctl reload caddy
+#
+# Replace visa.niec.edu.np with your real domain before using this. The domain
+# must already point at this server's IP (an A record), or certificate issuance
+# fails.
+
+visa.niec.edu.np {
+	encode zstd gzip
+
+	# The API and health check go to the backend.
+	handle /api/* {
+		reverse_proxy 127.0.0.1:4000
+	}
+
+	handle /health {
+		reverse_proxy 127.0.0.1:4000
+	}
+
+	# Everything else is the website.
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	# Headers the app cannot set for itself because Caddy terminates TLS.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Allow the microphone on this origin only - the interview needs it.
+		Permissions-Policy "microphone=(self), geolocation=(), camera=(), payment=()"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/niec-visa-ai.log {
+			roll_size 10MB
+			roll_keep 10
+		}
+	}
+}
+
+# Because the site is served from one origin, the browser calls
+# https://visa.niec.edu.np/api/... and CORS never comes into play. Set these
+# in .env to match:
+#
+#   PUBLIC_APP_URL=https://visa.niec.edu.np
+#   PUBLIC_API_URL=https://visa.niec.edu.np
+#   CORS_ORIGINS=https://visa.niec.edu.np
