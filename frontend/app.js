@@ -14,7 +14,7 @@
 
 /* ------------------------------------------------------------------ 1. api */
 
-const API_BASE = (window.NIEC_CONFIG && window.NIEC_CONFIG.apiBaseUrl) || "http://localhost:4000";
+const API_BASE = (window.NIEC_CONFIG && typeof window.NIEC_CONFIG.apiBaseUrl === "string") ? window.NIEC_CONFIG.apiBaseUrl : "http://localhost:4000";
 const TOKEN_KEY = "niec_token";
 const THEME_KEY = "niec_theme";
 
