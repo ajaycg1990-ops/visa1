@@ -19,6 +19,10 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash   TEXT,
   -- Google "sub" claim, set when the account is linked to Google.
   google_sub      TEXT UNIQUE,
+  -- 'student' or 'admin'. Admins see aggregate reporting only: no endpoint
+  -- returns another student's answers, profile or coaching text.
+  -- Promote with: node scripts/make-admin.mjs someone@niec.edu.np
+  role            TEXT NOT NULL DEFAULT 'student' CHECK (role IN ('student', 'admin')),
   created_at      TEXT NOT NULL,
   last_login_at   TEXT
 );
@@ -110,6 +114,17 @@ CREATE TABLE IF NOT EXISTS interviews (
   model_used        TEXT,
   overall_score     INTEGER,
   verdict           TEXT,
+  -- Adaptive interview: the simulated officer's confidence (0-100) after the
+  -- latest answer, why the interview ended, and the resulting rank.
+  confidence        INTEGER,
+  ended_reason      TEXT, -- approved_early | max_questions | no_more_questions | student_ended
+  rank              TEXT, -- strong | good | borderline | incomplete | not_ready
+  -- Interview-day mode: a random officer, and no scores, hints or transcript
+  -- until the report.
+  exam_mode         INTEGER NOT NULL DEFAULT 0,
+  -- Topics the officer must cover before approving (JSON list). NULL on
+  -- interviews from before questions were chosen live.
+  required_topics   TEXT,
   summary           TEXT, -- (encrypted)
   created_at        TEXT NOT NULL,
   completed_at      TEXT
@@ -124,6 +139,15 @@ CREATE TABLE IF NOT EXISTS interview_questions (
   category        TEXT NOT NULL,
   question        TEXT NOT NULL, -- (encrypted)
   is_follow_up    INTEGER NOT NULL DEFAULT 0,
+  -- Must be answered before the officer may approve early: the three pillars
+  -- (genuine student, funding, return) plus the student's own risk topics.
+  is_required     INTEGER NOT NULL DEFAULT 0,
+  -- The bank topic this question covers (e.g. sponsor), and where it came
+  -- from: bank | upload:<id> | hook:<id> | drill | challenge | ai | suggested.
+  topic           TEXT,
+  origin          TEXT,
+  -- Officer confidence right after this answer, for the report's graph.
+  confidence_after INTEGER,
   answer          TEXT,          -- (encrypted)
   answer_seconds  INTEGER,
   -- Per-answer scoring: the three dimensions shown after every answer.
@@ -163,6 +187,43 @@ CREATE TABLE IF NOT EXISTS interview_insights (
 
 CREATE INDEX IF NOT EXISTS idx_insights_interview ON interview_insights (interview_id);
 
+-- "Practise this answer again" from the report. Each attempt is scored the
+-- same way as the original, but never changes the interview's score, rank or
+-- verdict - the report stays a record of what happened at the window.
+CREATE TABLE IF NOT EXISTS answer_retries (
+  id            TEXT PRIMARY KEY,
+  interview_id  TEXT NOT NULL REFERENCES interviews (id) ON DELETE CASCADE,
+  position      INTEGER NOT NULL,
+  answer        TEXT NOT NULL, -- (encrypted)
+  answer_score  INTEGER NOT NULL,
+  tone_score    INTEGER NOT NULL,
+  clarity_score INTEGER NOT NULL,
+  feedback      TEXT,          -- (encrypted)
+  red_flags     TEXT,          -- JSON list of flag labels
+  created_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_retries_interview ON answer_retries (interview_id, position);
+
+/* ------------------------------ question bank ----------------------------- */
+
+-- Questions uploaded by NIEC staff from the admin portal. Asked alongside the
+-- built-in topics; not personal data, so stored in plain text.
+CREATE TABLE IF NOT EXISTS bank_questions (
+  id          TEXT PRIMARY KEY,
+  question    TEXT NOT NULL,
+  -- Lower-cased, punctuation-free copy: the duplicate check.
+  norm        TEXT NOT NULL UNIQUE,
+  category    TEXT NOT NULL,
+  -- Built-in topic it was sorted into (sponsor, after_graduation, ...), or NULL.
+  topic       TEXT,
+  active      INTEGER NOT NULL DEFAULT 1,
+  created_by  TEXT,
+  created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_bank_active ON bank_questions (active);
+
 /* ------------------------- custom question coaching ----------------------- */
 
 CREATE TABLE IF NOT EXISTS custom_questions (
@@ -199,6 +260,8 @@ CREATE TABLE IF NOT EXISTS preferences (
   theme              TEXT NOT NULL DEFAULT 'light' CHECK (theme IN ('light', 'dark', 'system')),
   marketing_opt_in   INTEGER NOT NULL DEFAULT 0,
   product_emails     INTEGER NOT NULL DEFAULT 1,
+  -- Ticked items on the personal document checklist (JSON list of ids).
+  checklist_done     TEXT,
   updated_at         TEXT NOT NULL
 );
 

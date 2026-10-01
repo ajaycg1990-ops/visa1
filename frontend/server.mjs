@@ -6,10 +6,11 @@ import { fileURLToPath } from "node:url";
 /**
  * Static server for the frontend.
  *
- * Dependency-free on purpose. It does three things:
+ * Dependency-free on purpose. It does four things:
  *   - serves the files in this folder,
- *   - generates /runtime-config.js so the browser knows where the API lives
- *     without the API URL being baked into app.js at build time,
+ *   - passes /api/* through to the backend, so the whole site works from one
+ *     address - on this computer, through a tunnel, or behind a proxy,
+ *   - generates /runtime-config.js so the browser knows where the API lives,
  *   - sets the security headers a production deployment needs.
  */
 
@@ -18,8 +19,14 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number.parseInt(process.env.FRONTEND_PORT || "3000", 10);
 /** Loopback by default: in production only the reverse proxy should reach this. */
 const HOST = process.env.HOST || "127.0.0.1";
-const API_URL = process.env.PUBLIC_API_URL === "SAME_ORIGIN" ? "" : (process.env.PUBLIC_API_URL || "");
-const INTERNAL_API_URL = process.env.INTERNAL_API_URL || "http://127.0.0.1:4000";
+/** Where this server reaches the backend - always on this machine. */
+const BACKEND = { host: "127.0.0.1", port: Number.parseInt(process.env.BACKEND_PORT || process.env.PORT || "4000", 10) };
+/**
+ * Where the browser sends API calls. Empty means "this same address", via the
+ * pass-through below - the default, and what makes a tunnel or a single
+ * domain work. BROWSER_API_URL is only for splitting the API onto another host.
+ */
+const API_URL = process.env.BROWSER_API_URL || "";
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -54,7 +61,7 @@ function contentSecurityPolicy() {
     "style-src 'self' 'unsafe-inline'",
     "script-src 'self' https://accounts.google.com https://apis.google.com",
     "frame-src https://accounts.google.com",
-    `connect-src 'self' ${API_URL || ""} https://accounts.google.com`,
+    `connect-src 'self' ${API_URL} https://accounts.google.com`.replace(/\s+/g, " "),
     "form-action 'self'",
   ].join("; ");
 }
@@ -82,25 +89,41 @@ async function resolveFile(urlPath) {
   }
 }
 
+/**
+ * Pass an /api request to the backend and stream the answer back. The
+ * visitor's address is forwarded so the backend's per-person rate limits and
+ * logs still see real people, not this server.
+ */
+function proxyToBackend(req, res) {
+  // Never pass on a visitor-supplied X-Forwarded-For: anyone could set it to
+  // dodge the rate limits. Trust only Cloudflare's verified address (when
+  // reached through a Cloudflare tunnel) or the actual connection.
+  const forwardedFor = req.headers["cf-connecting-ip"] || req.socket.remoteAddress || "";
+  const upstream = http.request(
+    {
+      ...BACKEND,
+      path: req.url,
+      method: req.method,
+      headers: { ...req.headers, host: `${BACKEND.host}:${BACKEND.port}`, "x-forwarded-for": forwardedFor },
+    },
+    (answer) => {
+      res.writeHead(answer.statusCode ?? 502, answer.headers);
+      answer.pipe(res);
+    }
+  );
+  upstream.on("error", () => {
+    if (res.headersSent) return res.destroy();
+    res.writeHead(502, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: "The NIEC Visa AI server is not responding. Please try again in a moment." }));
+  });
+  req.pipe(upstream);
+}
+
 const server = http.createServer(async (req, res) => {
   const urlPath = (req.url || "/").split("?")[0];
 
-  // Single-port hosting: forward API and health requests to the private API process.
-  if (urlPath === "/health" || urlPath.startsWith("/api/")) {
-    const target = new URL(req.url || "/", INTERNAL_API_URL);
-    const proxyReq = http.request(target, {
-      method: req.method,
-      headers: { ...req.headers, host: target.host },
-    }, (proxyRes) => {
-      res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
-      proxyRes.pipe(res);
-    });
-    proxyReq.on("error", (error) => {
-      res.statusCode = 502;
-      res.setHeader("Content-Type", "application/json; charset=utf-8");
-      res.end(JSON.stringify({ error: "API unavailable", detail: error.message }));
-    });
-    req.pipe(proxyReq);
+  if (urlPath.startsWith("/api/")) {
+    proxyToBackend(req, res);
     return;
   }
 
@@ -119,7 +142,18 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  const file = (await resolveFile(urlPath)) ?? path.join(HERE, "index.html"); // SPA fallback
+  // The admin portal lives at /admin/ - its assets load by absolute path, so
+  // the trailing slash only matters for tidiness.
+  if (urlPath === "/admin") {
+    res.writeHead(301, { Location: "/admin/" });
+    res.end();
+    return;
+  }
+
+  // Each app falls back to its own page: /admin/... to the portal, the rest
+  // to the student site.
+  const fallback = urlPath.startsWith("/admin/") ? path.join(HERE, "admin", "index.html") : path.join(HERE, "index.html");
+  const file = (await resolveFile(urlPath)) ?? fallback;
   try {
     const body = await readFile(file);
     const extension = path.extname(file).toLowerCase();
@@ -139,5 +173,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[web]  NIEC Visa AI on http://${HOST}:${PORT}`);
-  console.log(`[web]  talking to the API at ${API_URL}`);
+  console.log(`[web]  API: ${API_URL || `/api on this address, passed through to ${BACKEND.host}:${BACKEND.port}`}`);
 });

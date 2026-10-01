@@ -88,41 +88,52 @@ export function isTokenSignatureValid(token) {
 
 /* ------------------------- field-level encryption ------------------------- */
 
-// One 32-byte key derived from the configured passphrase.
-const ENCRYPTION_KEY = createHash("sha256").update(String(config.encryptionKey)).digest();
-const ENCRYPTED_PREFIX = "enc:v1:";
+export const ENCRYPTED_PREFIX = "enc:v1:";
 
 /**
- * Encrypt one field. Returns `enc:v1:<iv>:<tag>:<ciphertext>` (all base64url).
- * Null/empty input passes through untouched so optional columns stay NULL.
+ * Field encryption for one passphrase. The app uses the configured key (the
+ * exports below); scripts/rotate-key.mjs builds one for the old key and one
+ * for the new, to re-encrypt a database without ever writing plain text.
  */
-export function encryptField(value) {
-  if (value === null || value === undefined || value === "") return value ?? null;
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", ENCRYPTION_KEY, iv);
-  const ciphertext = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `${ENCRYPTED_PREFIX}${iv.toString("base64url")}:${tag.toString("base64url")}:${ciphertext.toString("base64url")}`;
+export function fieldCipher(passphrase) {
+  // One 32-byte key derived from the passphrase.
+  const key = createHash("sha256").update(String(passphrase)).digest();
+  return {
+    /**
+     * Encrypt one field. Returns `enc:v1:<iv>:<tag>:<ciphertext>` (all
+     * base64url). Null/empty input passes through so optional columns stay NULL.
+     */
+    encrypt(value) {
+      if (value === null || value === undefined || value === "") return value ?? null;
+      const text = typeof value === "string" ? value : JSON.stringify(value);
+      const iv = randomBytes(12);
+      const cipher = createCipheriv("aes-256-gcm", key, iv);
+      const ciphertext = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
+      const tag = cipher.getAuthTag();
+      return `${ENCRYPTED_PREFIX}${iv.toString("base64url")}:${tag.toString("base64url")}:${ciphertext.toString("base64url")}`;
+    },
+    /**
+     * Decrypt one field. Values not in the encrypted format are returned as-is,
+     * which keeps the app readable if a row predates encryption. A wrong key or
+     * a tampered row gives null rather than crashing a page render.
+     */
+    decrypt(value) {
+      if (typeof value !== "string" || !value.startsWith(ENCRYPTED_PREFIX)) return value ?? null;
+      try {
+        const [, , ivPart, tagPart, dataPart] = value.split(":");
+        const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(ivPart, "base64url"));
+        decipher.setAuthTag(Buffer.from(tagPart, "base64url"));
+        return Buffer.concat([decipher.update(Buffer.from(dataPart, "base64url")), decipher.final()]).toString("utf8");
+      } catch {
+        return null;
+      }
+    },
+  };
 }
 
-/**
- * Decrypt one field. Values that are not in the encrypted format are returned
- * as-is, which keeps the app readable if a row predates encryption.
- */
-export function decryptField(value) {
-  if (typeof value !== "string" || !value.startsWith(ENCRYPTED_PREFIX)) return value ?? null;
-  try {
-    const [, , ivPart, tagPart, dataPart] = value.split(":");
-    const decipher = createDecipheriv("aes-256-gcm", ENCRYPTION_KEY, Buffer.from(ivPart, "base64url"));
-    decipher.setAuthTag(Buffer.from(tagPart, "base64url"));
-    const plain = Buffer.concat([decipher.update(Buffer.from(dataPart, "base64url")), decipher.final()]);
-    return plain.toString("utf8");
-  } catch {
-    // A wrong key or tampered row must not crash a page render.
-    return null;
-  }
-}
+const appCipher = fieldCipher(config.encryptionKey);
+export const encryptField = (value) => appCipher.encrypt(value);
+export const decryptField = (value) => appCipher.decrypt(value);
 
 export function encryptJson(value) {
   if (value === null || value === undefined) return null;

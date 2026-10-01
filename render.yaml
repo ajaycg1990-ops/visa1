@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: niec-visa-ai
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: DATA_ENCRYPTION_KEY
+        generateValue: true

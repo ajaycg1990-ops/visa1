@@ -72,6 +72,11 @@
   box-sizing: border-box;
 }
 
+/* `display` on a class (e.g. .btn) would otherwise beat the hidden attribute. */
+[hidden] {
+  display: none !important;
+}
+
 html {
   scroll-behavior: smooth;
   -webkit-text-size-adjust: 100%;
@@ -602,6 +607,60 @@ select:focus {
   color: var(--ink-faint);
 }
 
+/* Marks the few profile fields that change the interview most. */
+.field-badge {
+  display: inline-block;
+  margin-inline-start: 6px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+/* Password field with a show/hide button inside it. */
+.password-wrap {
+  position: relative;
+}
+
+.password-wrap input {
+  padding-inline-end: 68px;
+}
+
+.password-wrap .reveal {
+  position: absolute;
+  inset-block: 4px;
+  inset-inline-end: 5px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--brand-dark);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.password-wrap .reveal:hover {
+  background: var(--brand-soft);
+}
+
+kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--card);
+  font-family: inherit;
+  font-size: 11.5px;
+  color: var(--ink);
+}
+
 .checkbox {
   display: flex;
   gap: 10px;
@@ -616,6 +675,49 @@ select:focus {
   width: 16px;
   height: 16px;
   accent-color: var(--brand);
+}
+
+/* Admin question bank: a file dragged over the upload card. */
+.bank-drop {
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.bank-drop-over {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  outline: 2px dashed var(--brand);
+  outline-offset: -8px;
+}
+
+/* Admin question bank: switched-off questions fade back. */
+.bank-off td:not(:last-child) {
+  opacity: 0.5;
+}
+
+/* Document checklist rows. */
+.doc-item {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.doc-item:last-child {
+  border-bottom: 0;
+}
+
+.doc-item b {
+  color: var(--ink);
+}
+
+.doc-detail,
+.doc-because {
+  display: block;
+  margin-top: 3px;
+  line-height: 1.55;
+}
+
+.doc-because {
+  font-size: 12.5px;
+  color: var(--brand-dark);
 }
 
 .alert {
@@ -1146,6 +1248,11 @@ select:focus {
   font-size: 13px;
 }
 
+/* Scrolled to after each answer; keep it clear of the sticky header. */
+.interview-shell .card {
+  scroll-margin-top: 84px;
+}
+
 .question-text {
   font-family: var(--font-display);
   font-size: clamp(20px, 3vw, 26px);
@@ -1175,6 +1282,30 @@ select:focus {
 
 .mode-card:hover {
   border-color: color-mix(in srgb, var(--brand) 45%, transparent);
+}
+
+/* Interview-day mode: the officer is drawn at random, so the choice is off. */
+.mode-card.mode-card-off,
+.mode-card.mode-card-off[aria-pressed="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  border-color: var(--line);
+  background: var(--card);
+}
+
+.exam-toggle {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+}
+
+.exam-toggle:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.exam-toggle b {
+  color: var(--ink);
 }
 
 .mode-card[aria-pressed="true"] {
@@ -1304,6 +1435,71 @@ select:focus {
   margin-bottom: 7px;
 }
 
+/* Practise one answer again, from the report. */
+.retry {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--line);
+}
+
+.retry-label {
+  display: block;
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 8px;
+}
+
+.retry-box {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+}
+
+.retry-history {
+  margin-bottom: 14px;
+}
+
+.retry-attempt {
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  padding: 11px 13px;
+  margin-top: 8px;
+}
+
+.retry-result:not(:empty) {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+}
+
+.retry-compare {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 18px;
+}
+
+.retry-compare > div:not(.retry-arrow) {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.retry-compare b {
+  font-family: var(--font-display);
+  font-size: 26px;
+  line-height: 1;
+}
+
+.retry-arrow {
+  font-size: 20px;
+  color: var(--ink-faint);
+  padding-bottom: 2px;
+}
+
 .flag {
   display: flex;
   gap: 12px;
@@ -1396,6 +1592,154 @@ select:focus {
 
 .article li {
   margin-bottom: 7px;
+}
+
+/* ------------------------- adaptive interview ------------------------- */
+
+.approved-card {
+  text-align: center;
+  padding: 44px 28px;
+  border-top: 4px solid var(--good);
+}
+
+.approved-card h1 {
+  margin-top: 8px;
+  font-size: clamp(24px, 4vw, 32px);
+  color: var(--good);
+}
+
+.approved-card .lede {
+  max-width: 46ch;
+  margin: 14px auto 0;
+}
+
+.confidence-chart {
+  margin-top: 16px;
+  overflow-x: auto;
+}
+
+.confidence-chart svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.confidence-chart .axis {
+  font-size: 11px;
+  fill: var(--ink-faint);
+}
+
+.confidence-chart .bar-line {
+  stroke: var(--good);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 5;
+}
+
+.confidence-chart .bar-label {
+  font-size: 11px;
+  font-weight: 600;
+  fill: var(--good);
+}
+
+.unasked-list {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.unasked-list li {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  font-size: 14.5px;
+  color: var(--ink);
+}
+
+/* Staff portal: a quieter, deliberately unbranded entrance. */
+.staff-wrap {
+  max-width: 440px;
+  margin: 64px auto;
+}
+
+.staff-card {
+  padding: 32px;
+  border-top: 4px solid var(--brand);
+}
+
+.staff-mark {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.staff-mark img {
+  height: 34px;
+  width: auto;
+}
+
+.staff-mark span {
+  padding-inline-start: 12px;
+  border-inline-start: 1px solid var(--line);
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--brand);
+}
+
+/* Admin tables: scroll sideways on a phone rather than squashing columns. */
+.table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  min-width: 620px;
+}
+
+.data-table th {
+  text-align: start;
+  padding: 12px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  font-size: 11.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.data-table td {
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.data-table tr:last-child td {
+  border-bottom: none;
+}
+
+.data-table .muted {
+  margin-top: 2px;
+}
+
+code {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font-size: 12.5px;
 }
 
 .notification {
@@ -1689,6 +2033,25 @@ select:focus {
 
   .mode-card {
     padding: 20px;
+  }
+
+  /* Footer links, FAQ questions and "See all"-style links sit close
+     together; give each a thumb-sized target. */
+  .footer-grid nav a,
+  .link-target {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .faq summary {
+    min-height: 44px;
+    align-items: center;
+  }
+
+  /* Padding, not flex: a flex summary loses its disclosure arrow. */
+  details:not(.faq details) > summary {
+    padding-block: 12px;
   }
 }
 

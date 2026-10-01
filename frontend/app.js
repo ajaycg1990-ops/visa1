@@ -1,3 +1,20 @@
+import {
+  $,
+  $$,
+  API_BASE,
+  THEME_KEY,
+  createApi,
+  esc,
+  formatDate,
+  formatDateTime,
+  installPasswordReveal,
+  meter,
+  resolveTheme,
+  scoreClass,
+  setBusy,
+  toast,
+} from "./shared.mjs";
+
 /* =========================================================================
    NIEC Visa AI - frontend application
    Vanilla ES modules, no build step and no framework.
@@ -14,9 +31,7 @@
 
 /* ------------------------------------------------------------------ 1. api */
 
-const API_BASE = (window.NIEC_CONFIG && typeof window.NIEC_CONFIG.apiBaseUrl === "string") ? window.NIEC_CONFIG.apiBaseUrl : "http://localhost:4000";
 const TOKEN_KEY = "niec_token";
-const THEME_KEY = "niec_theme";
 
 const state = {
   token: localStorage.getItem(TOKEN_KEY) || null,
@@ -29,36 +44,7 @@ const state = {
   interview: null, // live interview runtime
 };
 
-class ApiError extends Error {
-  constructor(message, status) {
-    super(message);
-    this.status = status;
-  }
-}
-
-async function api(path, { method = "GET", body } = {}) {
-  const headers = { Accept: "application/json" };
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (state.token) headers.Authorization = `Bearer ${state.token}`;
-
-  let response;
-  try {
-    response = await fetch(`${API_BASE}${path}`, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-  } catch {
-    throw new ApiError("Cannot reach the NIEC Visa AI server. Is the backend running?", 0);
-  }
-
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    if (response.status === 401 && state.token) signOutLocally();
-    throw new ApiError(payload.error || "Something went wrong.", response.status);
-  }
-  return payload;
-}
+const api = createApi({ getToken: () => state.token, onUnauthorized: () => signOutLocally() });
 
 function setToken(token) {
   state.token = token;
@@ -93,42 +79,14 @@ async function loadSession() {
 
 /* -------------------------------------------------------------- 2. helpers */
 
-const $ = (selector, scope = document) => scope.querySelector(selector);
-const $$ = (selector, scope = document) => [...scope.querySelectorAll(selector)];
-
-/** Escape anything that came from a user or the API before putting it in HTML. */
-function esc(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+// How long an answer takes to SAY at the window. Same rate and bands as the
+// server's spokenLength() in ai.mjs.
+const SPEAKING_RATE = 2.5;
+function spokenSeconds(text) {
+  const n = String(text || "").trim() ? String(text).trim().split(/\s+/).length : 0;
+  return Math.round(n / SPEAKING_RATE);
 }
-
-function toast(message, kind = "") {
-  const stack = $("#toastStack");
-  const node = document.createElement("div");
-  node.className = `toast ${kind}`.trim();
-  node.textContent = message;
-  stack.append(node);
-  setTimeout(() => {
-    node.style.opacity = "0";
-    setTimeout(() => node.remove(), 300);
-  }, 4200);
-}
-
-const scoreClass = (value) => (value >= 75 ? "good" : value >= 60 ? "warn" : "bad");
-
-function meter(label, value, sub = "") {
-  const tone = scoreClass(value);
-  return `
-    <div class="meter">
-      <div class="meter-head"><span>${esc(label)}</span><b class="score-${tone}">${value}</b></div>
-      <div class="meter-track"><div class="meter-fill fill-${tone}" style="width:${Math.max(2, value)}%"></div></div>
-      ${sub ? `<div class="meter-sub">${esc(sub)}</div>` : ""}
-    </div>`;
-}
+const spokenClass = (seconds) => (seconds > 45 ? "bad" : seconds < 8 ? "warn" : "good");
 
 function ring(value, caption = "score") {
   const size = 148;
@@ -184,47 +142,105 @@ function verdictPill(verdict) {
   return `<span class="pill ${map[verdict] || "pill-warn"}">${esc(verdict)}</span>`;
 }
 
+const RANK_STYLES = {
+  strong: ["Strong", "pill-good"],
+  good: ["Good", "pill-good"],
+  borderline: ["Borderline", "pill-warn"],
+  incomplete: ["Incomplete", "pill-warn"],
+  not_ready: ["Not ready yet", "pill-bad"],
+};
+
+function rankPill(rank) {
+  if (!rank || !RANK_STYLES[rank]) return "";
+  const [label, style] = RANK_STYLES[rank];
+  return `<span class="pill ${style}">Rank: ${esc(label)}</span>`;
+}
+
+/**
+ * The officer's confidence after every answer, as a line against the bar they
+ * needed to approve. Shows the exact answer where the officer was won or lost -
+ * the most useful single picture in the report.
+ */
+function confidenceCard(results) {
+  const answered = results.questions.filter((q) => q.answer && typeof q.confidenceAfter === "number");
+  if (!answered.length) return "";
+
+  const adaptive = state.serverConfig?.adaptive ?? { thresholds: { casual: 70, neutral: 75, strict: 78 }, startConfidence: 50 };
+  const bar = adaptive.thresholds[results.mode] ?? 75;
+  const points = [adaptive.startConfidence, ...answered.map((q) => q.confidenceAfter)];
+
+  // Drawn at roughly the size it is shown, so the labels stay readable: a
+  // phone gets a compact graph that fits, not a wide one to swipe across.
+  const narrow = window.matchMedia("(max-width: 620px)").matches;
+  const width = narrow ? 320 : 640;
+  const height = narrow ? 170 : 190;
+  const pad = { top: 14, right: 10, bottom: 26, left: 30 };
+  const innerW = width - pad.left - pad.right;
+  const innerH = height - pad.top - pad.bottom;
+  const x = (i) => pad.left + (points.length === 1 ? 0 : (i / (points.length - 1)) * innerW);
+  const y = (v) => pad.top + innerH - (v / 100) * innerH;
+
+  const path = points.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+
+  // The biggest single fall is where the officer was lost.
+  let worstDrop = { at: -1, by: 0 };
+  for (let i = 1; i < points.length; i++) {
+    const drop = points[i - 1] - points[i];
+    if (drop > worstDrop.by) worstDrop = { at: i, by: drop };
+  }
+  const lostAt = worstDrop.by >= 8 ? answered[worstDrop.at - 1] : null;
+
+  const dots = points
+    .map((v, i) => {
+      const colour = i === 0 ? "var(--ink-faint)" : v >= bar ? "var(--good)" : v >= 45 ? "var(--warn)" : "var(--bad)";
+      const r = lostAt && i === worstDrop.at ? 6 : 4;
+      return `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="${r}" fill="${colour}"><title>${i === 0 ? "Start" : `After question ${i}`}: ${v}</title></circle>`;
+    })
+    .join("");
+
+  const labels = points
+    .map((_, i) => `<text x="${x(i).toFixed(1)}" y="${height - 6}" text-anchor="middle" class="axis">${i === 0 ? "start" : `Q${i}`}</text>`)
+    .join("");
+
+  return `
+    <div class="card" style="margin-top:18px">
+      <h2 style="font-size:18px">How the officer's confidence moved</h2>
+      <p style="margin-top:6px;font-size:14px;color:var(--ink-soft)">
+        Every answer moved the officer closer to approving you, or further away. The dashed line is the confidence
+        this officer needed before they would approve early.
+      </p>
+      <div class="confidence-chart">
+        <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Officer confidence after each answer">
+          <line x1="${pad.left}" x2="${width - pad.right}" y1="${y(bar)}" y2="${y(bar)}" class="bar-line"></line>
+          <text x="${width - pad.right}" y="${y(bar) - 6}" text-anchor="end" class="bar-label">approval bar ${bar}</text>
+          ${[0, 50, 100].map((v) => `<text x="${pad.left - 8}" y="${y(v) + 4}" text-anchor="end" class="axis">${v}</text>`).join("")}
+          <path d="${path}" fill="none" stroke="var(--brand)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"></path>
+          ${dots}
+          ${labels}
+        </svg>
+      </div>
+      ${
+        lostAt
+          ? `<div class="alert alert-warn" style="margin-top:14px">
+              <strong>You lost the officer at question ${worstDrop.at}</strong> (confidence fell by ${worstDrop.by}):
+              &ldquo;${esc(lostAt.question)}&rdquo;. That is the answer to practise first.
+            </div>`
+          : results.endedReason === "approved_early"
+            ? `<div class="alert alert-good" style="margin-top:14px">Confidence rose steadily - no single answer cost you the officer.</div>`
+            : ""
+      }
+    </div>`;
+}
+
 function severityPill(severity) {
   const map = { high: "pill-bad", medium: "pill-warn", low: "pill-brand" };
   return `<span class="pill ${map[severity] || "pill-brand"}">${esc(severity)} risk</span>`;
 }
 
-const formatDate = (value) =>
-  value
-    ? new Date(value).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })
-    : "";
-
-const formatDateTime = (value) =>
-  value
-    ? new Date(value).toLocaleString(undefined, {
-        day: "numeric",
-        month: "short",
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-    : "";
-
-function setBusy(button, busy, busyLabel = "Working...") {
-  if (!button) return;
-  if (busy) {
-    button.dataset.label = button.textContent;
-    button.textContent = busyLabel;
-    button.disabled = true;
-  } else {
-    button.textContent = button.dataset.label || button.textContent;
-    button.disabled = false;
-  }
-}
-
 /* --------------------------------------------------- 3. theme and chrome */
 
 function applyTheme(theme, { persist = true } = {}) {
-  const resolved =
-    theme === "system"
-      ? window.matchMedia("(prefers-color-scheme: dark)").matches
-        ? "dark"
-        : "light"
-      : theme;
+  const resolved = resolveTheme(theme);
   document.documentElement.dataset.theme = resolved;
   $("#themeIcon").textContent = resolved === "dark" ? "☀" : "☾";
   if (persist) localStorage.setItem(THEME_KEY, theme);
@@ -256,12 +272,15 @@ const NAV_SIGNED_IN = [
   ["#/interview", "Mock interview"],
   ["#/coach", "Ask a question"],
   ["#/analytics", "Progress"],
+  ["#/documents", "Documents"],
   ["#/resources", "Resources"],
 ];
 
 function renderChrome() {
   const signedIn = Boolean(state.user);
-  const links = signedIn ? NAV_SIGNED_IN : NAV_SIGNED_OUT;
+  const links = signedIn
+    ? NAV_SIGNED_IN
+    : NAV_SIGNED_OUT;
   const current = location.hash || "#/";
 
   const linkHtml = links
@@ -317,7 +336,13 @@ function closeMobileNav() {
 
 /* ------------------------------------------------------------- 4. content */
 
-/** The applicant file. Mirrors PROFILE_FIELDS on the server. */
+/**
+ * The applicant file. Mirrors PROFILE_FIELDS on the server.
+ *
+ * A fourth item marks a field as long-form (textarea). The `key` fields listed
+ * in ESSENTIAL_FIELDS below are the handful that change the interview most, so
+ * the wizard can show a student how little is needed to start.
+ */
 const PROFILE_STEPS = [
   {
     id: "personal",
@@ -400,6 +425,20 @@ const PROFILE_STEPS = [
 ];
 
 const PROFILE_KEYS = PROFILE_STEPS.flatMap((step) => step.fields.map(([key]) => key));
+
+/**
+ * The few fields that shape an interview most. Everything else adds detail,
+ * so a student can start practising after these and fill the rest in later.
+ */
+const ESSENTIAL_FIELDS = ["fullName", "homeCountry", "usUniversity", "program", "sponsorRelation", "careerGoal"];
+
+const isEssential = (key) => ESSENTIAL_FIELDS.includes(key);
+
+/** Which essentials are still blank, as labels a student will recognise. */
+function missingEssentials(profile) {
+  const labels = new Map(PROFILE_STEPS.flatMap((s) => s.fields.map(([key, label]) => [key, label])));
+  return ESSENTIAL_FIELDS.filter((key) => !String(profile?.[key] ?? "").trim()).map((key) => labels.get(key) ?? key);
+}
 
 /** The educational resource library. */
 const RESOURCES = [
@@ -924,6 +963,11 @@ function mountGoogleButton() {
   document.head.append(script);
 }
 
+/**
+ * Show/hide toggles on password fields. Typing a password blind on a phone
+ * keyboard is where most failed sign-ins come from.
+ */
+
 function viewSignup() {
   authShell(
     "Start practising",
@@ -941,8 +985,11 @@ function viewSignup() {
       </div>
       <div class="field-group">
         <label class="label" for="password">Password</label>
-        <input id="password" name="password" type="password" autocomplete="new-password" required
-          placeholder="At least 8 characters, with a number" />
+        <div class="password-wrap">
+          <input id="password" name="password" type="password" autocomplete="new-password" required
+            placeholder="At least 8 characters, with a number" />
+          <button type="button" class="reveal" data-for="password" aria-label="Show password">Show</button>
+        </div>
       </div>
       <label class="checkbox" style="margin:14px 0 18px">
         <input type="checkbox" id="marketingOptIn" />
@@ -957,6 +1004,7 @@ function viewSignup() {
   );
 
   mountGoogleButton();
+  installPasswordReveal();
   $("#signupForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = $("#signupForm button[type=submit]");
@@ -993,15 +1041,48 @@ function viewLogin() {
       </div>
       <div class="field-group">
         <label class="label" for="password">Password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required placeholder="Your password" />
+        <div class="password-wrap">
+          <input id="password" name="password" type="password" autocomplete="current-password" required placeholder="Your password" />
+          <button type="button" class="reveal" data-for="password" aria-label="Show password">Show</button>
+        </div>
       </div>
       <p style="margin:-4px 0 16px;font-size:13.5px"><a href="#/forgot">Forgot your password?</a></p>
       <button class="btn btn-primary btn-block btn-lg" type="submit">Sign in</button>
     </form>
     ${googleButtonHtml()}
+    ${
+      state.serverConfig?.demoAvailable
+        ? `<div class="divider">or</div>
+           <button class="btn btn-ghost btn-block" id="demoBtn" type="button">Look around with the demo account</button>
+           <p class="muted" style="margin-top:8px;text-align:center">
+             A sample student with a completed profile and past interviews. Nothing you do there affects a real account.
+           </p>`
+        : ""
+    }
     <p style="margin-top:18px;text-align:center;font-size:14px;color:var(--ink-soft)">
       New here? <a href="#/signup">Create an account</a>
     </p>`);
+
+  installPasswordReveal();
+
+  $("#demoBtn")?.addEventListener("click", async () => {
+    const button = $("#demoBtn");
+    setBusy(button, true, "Opening the demo...");
+    try {
+      const data = await api("/api/auth/login", {
+        method: "POST",
+        body: { email: "student@example.com", password: "Demo123!" },
+      });
+      setToken(data.token);
+      await loadSession();
+      renderChrome();
+      toast("Signed in to the demo account. Have a look around.", "success");
+      location.hash = "#/dashboard";
+    } catch (error) {
+      toast(error.message, "error");
+      setBusy(button, false);
+    }
+  });
 
   mountGoogleButton();
   $("#loginForm").addEventListener("submit", async (event) => {
@@ -1067,12 +1148,16 @@ function viewReset(query) {
       ${token ? "" : `<div class="alert alert-error">This reset link is missing its token. Request a new one.</div>`}
       <div class="field-group">
         <label class="label" for="password">New password</label>
-        <input id="password" type="password" autocomplete="new-password" required placeholder="At least 8 characters, with a number" />
+        <div class="password-wrap">
+          <input id="password" type="password" autocomplete="new-password" required placeholder="At least 8 characters, with a number" />
+          <button type="button" class="reveal" data-for="password" aria-label="Show password">Show</button>
+        </div>
       </div>
       <button class="btn btn-primary btn-block btn-lg" type="submit"${token ? "" : " disabled"}>Set new password</button>
     </form>
     <p style="margin-top:18px;text-align:center;font-size:14px"><a href="#/forgot">Request a new link</a></p>`);
 
+  installPasswordReveal();
   $("#resetForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = $("#resetForm button[type=submit]");
@@ -1101,8 +1186,11 @@ function profileFieldHtml([key, label, placeholder, long], value) {
   const control = long
     ? `<textarea id="${id}" name="${key}" placeholder="${esc(placeholder)}">${esc(value)}</textarea>`
     : `<input type="text" id="${id}" name="${key}" placeholder="${esc(placeholder)}" value="${esc(value)}" />`;
+  // The handful that matter most are marked, so a student can see at a glance
+  // what is worth filling in first.
+  const badge = isEssential(key) ? ` <span class="field-badge">needed to start</span>` : "";
   return `<div class="field-group"${long ? ' style="grid-column:1/-1"' : ""}>
-    <label class="label" for="${id}">${esc(label)}</label>${control}</div>`;
+    <label class="label" for="${id}">${esc(label)}${badge}</label>${control}</div>`;
 }
 
 function viewOnboarding() {
@@ -1116,11 +1204,15 @@ function viewOnboarding() {
     main().innerHTML = `
       <div class="shell page" style="max-width:820px">
         <div class="page-head">
-          <p class="eyebrow">Your case file</p>
+          <p class="eyebrow">Your case file &middot; about 5 minutes</p>
           <h1>The officer reads your file before you speak.</h1>
           <p>
             Fill this in from your I-20 and DS-160 so every number matches your documents. It is used to write your
-            questions and to check your answers for contradictions. Do not enter passport or bank account numbers.
+            questions and to check your answers for contradictions.
+          </p>
+          <p style="margin-top:10px">
+            <strong>You can start after the first step</strong> - the rest only makes the questions sharper.
+            Never enter passport or bank account numbers; the practice does not need them.
           </p>
         </div>
 
@@ -1142,8 +1234,16 @@ function viewOnboarding() {
             <button class="btn btn-primary" id="nextBtn" type="button">
               ${step === PROFILE_STEPS.length - 1 ? "Finish and choose an officer" : "Save and continue"}
             </button>
-            <span class="muted">Every field is optional - the more you fill in, the more personal the interview.</span>
+            ${
+              step < PROFILE_STEPS.length - 1
+                ? `<button class="btn btn-ghost" id="skipBtn" type="button">Skip the rest, start interviewing</button>`
+                : ""
+            }
           </div>
+          <p class="muted" style="margin-top:12px;line-height:1.6">
+            Your answers save as you go, so you can stop here and finish later. Anything left blank just makes the
+            officer's questions more general.
+          </p>
         </div>
       </div>`;
 
@@ -1155,6 +1255,23 @@ function viewOnboarding() {
       collect();
       step -= 1;
       render();
+    });
+
+    // The escape hatch: save what exists and go and practise. A student who
+    // must finish 36 fields first often never takes an interview at all.
+    $("#skipBtn")?.addEventListener("click", async () => {
+      collect();
+      const button = $("#skipBtn");
+      setBusy(button, true, "Saving...");
+      try {
+        const data = await api("/api/profile", { method: "PUT", body: values });
+        state.profile = data.profile;
+        state.completeness = data.completeness;
+        location.hash = "#/interview";
+      } catch (error) {
+        toast(error.message, "error");
+        setBusy(button, false);
+      }
     });
 
     $("#nextBtn").addEventListener("click", async () => {
@@ -1243,9 +1360,10 @@ async function viewDashboard() {
   if (!requireAuth()) return;
   renderLoading();
 
-  const [{ analytics }, { interviews }] = await Promise.all([
+  const [{ analytics }, { interviews }, documents] = await Promise.all([
     api("/api/analytics"),
     api("/api/interviews"),
+    api("/api/documents"),
   ]);
 
   const firstName = state.user.fullName.split(" ")[0];
@@ -1340,13 +1458,178 @@ async function viewDashboard() {
           : ""
       }
 
+      ${storyCard(analytics.story)}
+      ${documentsCard(documents)}
+
       <section class="section" style="margin-top:44px">
         <div class="spread" style="margin-bottom:16px">
           <h2 style="font-size:21px">Your interviews</h2>
-          ${interviews.length ? `<a href="#/history">See all</a>` : ""}
+          ${interviews.length ? `<a class="link-target" href="#/history">See all</a>` : ""}
         </div>
         ${interviews.length ? interviews.slice(0, 5).map(interviewRow).join("") : `<div class="card empty">Nothing here yet - your first report will appear here.</div>`}
       </section>
+    </div>`;
+}
+
+/* ---- personal document checklist ---- */
+
+function documentsCard(documents) {
+  const { done, total, essentialDone, essentialTotal } = documents.progress;
+  const percent = total ? Math.round((done / total) * 100) : 0;
+  const tone = essentialDone === essentialTotal ? "good" : percent >= 50 ? "warn" : "bad";
+  return `
+    <div class="card spread" style="margin-top:18px">
+      <div style="flex:1;min-width:220px">
+        <h2 style="font-size:18px">Your documents</h2>
+        <p style="margin-top:4px;font-size:14.5px;color:var(--ink-soft)">
+          ${essentialDone} of ${essentialTotal} essential documents ready, built from your case file.
+        </p>
+        <div class="meter-track" style="margin-top:12px"><div class="meter-fill fill-${tone}" style="width:${Math.max(2, percent)}%"></div></div>
+      </div>
+      <a class="btn btn-secondary" href="#/documents">Open checklist</a>
+    </div>`;
+}
+
+async function viewDocuments() {
+  if (!requireAuth()) return;
+  renderLoading();
+  let documents = await api("/api/documents");
+
+  const render = () => {
+    const { groups, items, done, progress } = documents;
+    const ticked = new Set(done);
+    const percent = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
+    main().innerHTML = `
+      <div class="shell page" style="max-width:820px">
+        <div class="page-head">
+          <p class="eyebrow">Interview day</p>
+          <h1>Your document checklist</h1>
+          <p>Built from your case file: the core set everyone needs, plus the papers that back up your sponsor, funding and
+             history. Tick each one off as it goes into your folder.</p>
+        </div>
+
+        <div class="card">
+          <div class="spread">
+            <b>${progress.done} of ${progress.total} ready</b>
+            <span class="muted">${progress.essentialDone} of ${progress.essentialTotal} essential</span>
+          </div>
+          <div class="meter-track" style="margin-top:10px"><div class="meter-fill fill-${progress.essentialDone === progress.essentialTotal ? "good" : "warn"}" style="width:${Math.max(2, percent)}%"></div></div>
+          ${
+            state.profile?.usUniversity
+              ? ""
+              : `<div class="alert alert-warn" style="margin:14px 0 0">Your case file is mostly empty, so this is the general list.
+                 <a href="#/profile">Complete your profile</a> to see the documents your own case needs.</div>`
+          }
+        </div>
+
+        ${groups
+          .map((group) => {
+            const list = items.filter((i) => i.group === group.id);
+            if (!list.length) return "";
+            return `
+            <section class="card" style="margin-top:18px">
+              <h2 style="font-size:18px">${esc(group.title)}</h2>
+              <div style="margin-top:8px">
+                ${list
+                  .map(
+                    (item) => `
+                  <label class="checkbox doc-item">
+                    <input type="checkbox" data-doc="${esc(item.id)}" ${ticked.has(item.id) ? "checked" : ""} />
+                    <span>
+                      <b>${esc(item.title)}</b>${item.essential ? "" : ` <span class="pill pill-brand">recommended</span>`}
+                      <span class="doc-detail">${esc(item.detail)}</span>
+                      ${item.because ? `<span class="doc-because">${esc(item.because)}</span>` : ""}
+                    </span>
+                  </label>`
+                  )
+                  .join("")}
+              </div>
+            </section>`;
+          })
+          .join("")}
+
+        <p class="muted" style="margin-top:18px;line-height:1.6">
+          Preparation guidance only - not an official list. Requirements change, so confirm against the current instructions
+          from the U.S. Embassy in Kathmandu and your university before your interview. Never bring a document you cannot
+          explain, and never alter one.
+        </p>
+      </div>`;
+
+    for (const box of document.querySelectorAll("[data-doc]")) {
+      box.addEventListener("change", async () => {
+        const next = new Set(documents.done);
+        if (box.checked) next.add(box.dataset.doc);
+        else next.delete(box.dataset.doc);
+        try {
+          documents = await api("/api/documents", { method: "PUT", body: { done: [...next] } });
+          render();
+        } catch (error) {
+          box.checked = !box.checked;
+          toast(error.message, "error");
+        }
+      });
+    }
+  };
+  render();
+}
+
+/* ---- your story across interviews ---- */
+
+function storyIssue(issue) {
+  return `<div class="flag">
+    ${severityPill(issue.severity)}
+    <div><p style="margin-top:0;color:var(--ink)">${esc(issue.message)}</p>
+      ${issue.quote ? `<p class="muted" style="margin-top:6px">You said: "${esc(issue.quote)}"</p>` : ""}
+      <a href="#/results/${esc(issue.interviewId)}" style="font-size:13px">Open that report</a></div>
+  </div>`;
+}
+
+const STORY_STATUS = {
+  consistent: `<span class="pill pill-good">consistent</span>`,
+  changed: `<span class="pill pill-warn">changed</span>`,
+  conflicts_file: `<span class="pill pill-bad">differs from file</span>`,
+};
+
+/**
+ * The facts a student has stated across every interview, checked against
+ * each other and their file. `full` adds the fact-by-fact table.
+ */
+function storyCard(story, { full = false } = {}) {
+  if (!story?.facts?.length) return "";
+  const settled = story.facts.filter((f) => f.status === "consistent").length;
+  return `
+    <div class="card" style="margin-top:18px">
+      <div class="spread">
+        <h2 style="font-size:18px">Your story across interviews</h2>
+        ${story.consistent ? `<span class="pill pill-good">consistent</span>` : `<span class="pill pill-bad">${story.issues.length} to fix</span>`}
+      </div>
+      <p style="margin-top:6px;font-size:14px;color:var(--ink-soft)">
+        ${
+          story.consistent
+            ? `Every figure and name you have given across ${story.interviewsChecked} interview${story.interviewsChecked === 1 ? "" : "s"} matches your file. Keep it that way at the window.`
+            : `${settled} of ${story.facts.length} facts are consistent. Officers compare every answer with your DS-160 and I-20 - these are the ones that drift.`
+        }
+      </p>
+      ${story.issues.length ? `<div style="margin-top:14px">${(full ? story.issues : story.issues.slice(0, 3)).map(storyIssue).join("")}</div>` : ""}
+      ${
+        full
+          ? `<div class="table-scroll" style="margin-top:16px"><table class="data-table">
+              <thead><tr><th>Fact</th><th>Your file</th><th>What you have said</th><th></th></tr></thead>
+              <tbody>${story.facts
+                .map(
+                  (f) => `<tr>
+                    <td>${esc(f.label.charAt(0).toUpperCase() + f.label.slice(1))}</td>
+                    <td>${f.file ? esc(f.file) : `<span class="muted">not recorded</span>`}</td>
+                    <td>${f.said.map((s) => `${esc(s.value)} <span class="muted">(${s.times}×)</span>`).join(", ")}</td>
+                    <td>${STORY_STATUS[f.status] ?? ""}</td>
+                  </tr>`
+                )
+                .join("")}</tbody>
+            </table></div>`
+          : story.issues.length > 3
+            ? `<p style="margin-top:12px"><a href="#/analytics">See all ${story.issues.length}</a></p>`
+            : ""
+      }
     </div>`;
 }
 
@@ -1355,11 +1638,16 @@ function interviewRow(interview) {
   return `
     <div class="list-row">
       <div>
-        <h3>${esc(interview.mode.charAt(0).toUpperCase() + interview.mode.slice(1))} officer</h3>
+        <h3>${esc(interview.mode.charAt(0).toUpperCase() + interview.mode.slice(1))} officer${interview.examMode ? ` <span class="pill pill-accent">interview day</span>` : ""}</h3>
         <p class="muted">${formatDateTime(interview.createdAt)} &middot; ${interview.answered} answer${interview.answered === 1 ? "" : "s"}</p>
       </div>
       <div class="row">
-        ${done ? verdictPill(interview.verdict) : `<span class="pill pill-warn">in progress</span>`}
+        ${
+          done
+            ? // Interviews from before adaptive length have no rank - show the verdict.
+              rankPill(interview.rank) || verdictPill(interview.verdict)
+            : `<span class="pill pill-warn">in progress</span>`
+        }
         ${done ? `<strong style="font-family:var(--font-display);font-size:19px" class="score-${scoreClass(interview.overallScore)}">${interview.overallScore}</strong>` : ""}
         <a class="btn btn-ghost btn-sm" href="${done ? `#/results/${interview.id}` : `#/interview/${interview.id}`}">
           ${done ? "Report" : "Resume"}
@@ -1447,6 +1735,8 @@ async function viewAnalytics() {
           }
         </div>
       </div>
+
+      ${storyCard(analytics.story, { full: true })}
     </div>`;
 }
 
@@ -1516,10 +1806,14 @@ function stopListening() {
 /** Interview setup: choose the officer, then create the session. */
 function viewInterviewSetup() {
   if (!requireAuth()) return;
+  // A student with no file at all is sent to build one, but anyone with even a
+  // partial file can interview straight away - see the nudge below.
   if (!state.profile) {
     location.hash = "#/onboarding";
     return;
   }
+
+  const missing = missingEssentials(state.profile);
 
   let mode = "neutral";
   const modes = state.serverConfig?.modes ?? [
@@ -1534,8 +1828,20 @@ function viewInterviewSetup() {
         <p class="eyebrow">New interview</p>
         <h1>Set up the window</h1>
         <p>Start with the neutral officer to find your weak categories, then run the same case again with the strict
-           officer. ${esc(String(state.serverConfig?.questionCount ?? 10))} questions, plus follow-up drills when an answer is thin.</p>
+           officer. Up to ${esc(String(state.serverConfig?.adaptive?.maxQuestions ?? 10))} questions - fewer if you convince the officer
+           early. Each question is chosen after your last answer, so no two interviews are the same.</p>
       </div>
+
+      ${
+        missing.length
+          ? `<div class="alert alert-info">
+              You can start right now. Filling in
+              <strong>${missing.map((m) => esc(m.toLowerCase())).join(", ")}</strong>
+              first would make the officer ask about your real case instead of general questions -
+              <a href="#/profile">add them</a>, or practise as you are.
+            </div>`
+          : ""
+      }
 
       <div class="card">
         <h2 style="font-size:18px">Choose your officer</h2>
@@ -1551,6 +1857,15 @@ function viewInterviewSetup() {
             )
             .join("")}
         </div>
+
+        <label class="checkbox exam-toggle" style="margin-top:22px">
+          <input type="checkbox" id="examMode" />
+          <span>
+            <b>Interview-day mode</b>
+            <span class="doc-detail">The dress rehearsal. A random officer, no scores or hints after each answer and no
+              transcript to look back at - just you and the window. Everything is revealed in the report.</span>
+          </span>
+        </label>
 
         <div class="row" style="margin-top:24px;border-top:1px solid var(--line);padding-top:20px">
           <button class="btn btn-primary btn-lg" id="startBtn" type="button">Enter the interview</button>
@@ -1568,11 +1883,22 @@ function viewInterviewSetup() {
     })
   );
 
+  // On interview day you do not choose your officer.
+  $("#examMode").addEventListener("change", (event) => {
+    const exam = event.target.checked;
+    $$(".mode-card").forEach((b) => {
+      b.disabled = exam;
+      b.classList.toggle("mode-card-off", exam);
+    });
+    $("#startBtn").textContent = exam ? "Enter on interview day" : "Enter the interview";
+  });
+
   $("#startBtn").addEventListener("click", async () => {
     const button = $("#startBtn");
-    setBusy(button, true, "Preparing the window...");
+    setBusy(button, true, "Starting...");
     try {
-      const data = await api("/api/interviews", { method: "POST", body: { mode } });
+      const examMode = $("#examMode").checked;
+      const data = await api("/api/interviews", { method: "POST", body: examMode ? { examMode } : { mode } });
       location.hash = `#/interview/${data.id}`;
     } catch (error) {
       toast(error.message, "error");
@@ -1606,6 +1932,8 @@ async function viewInterviewRun(id) {
     total: session.total,
     answered: session.answered,
     transcript: session.transcript,
+    // Interview day: no labels, scores, hints or transcript until the report.
+    exam: Boolean(session.examMode),
     started: false,
     answer: "",
     askedAt: Date.now(),
@@ -1617,11 +1945,15 @@ async function viewInterviewRun(id) {
     main().innerHTML = `
       <div class="shell page interview-shell">
         <div class="card" style="text-align:center;padding:40px 26px">
-          <p class="eyebrow">${esc(session.mode)} officer</p>
+          <p class="eyebrow">${runtime.exam ? "Interview-day mode" : `${esc(session.mode)} officer`}</p>
           <h1 style="font-size:26px;margin-top:6px">You are next at the window.</h1>
           <p class="lede" style="max-width:44ch;margin:14px auto 0">
-            The officer asks ${runtime.total} questions, one at a time, and follows up when an answer is thin.
-            Answer out loud if you can - speaking is the part students get wrong.
+            ${
+              runtime.exam
+                ? "You do not know which officer you will get, or how many questions they will ask. There are no scores or hints until the end - answer each question as if it counts, because on the day it does."
+                : `The officer asks up to ${runtime.total} questions, one at a time, and each one depends on what you said before it - vague answers and stray details get followed up.
+            Answer out loud if you can - speaking is the part students get wrong.`
+            }
           </p>
           <div style="margin-top:26px"><button class="btn btn-primary btn-lg" id="beginBtn" type="button">Begin interview</button></div>
           <p class="muted" style="margin-top:14px">
@@ -1642,7 +1974,16 @@ async function viewInterviewRun(id) {
   const renderQuestion = () => {
     if (!runtime.question) return;
     const q = runtime.question;
-    const progress = Math.round((runtime.answered / runtime.total) * 100);
+    // The length is not fixed: the officer may be satisfied well before the
+    // maximum, so progress shows how far through the most it could run.
+    const progress = runtime.exam ? 0 : Math.round((runtime.answered / runtime.total) * 100);
+    const followUpNote = runtime.exam
+      ? ""
+      : runtime.challenged
+      ? " &middot; <strong class=\"score-bad\">the officer is challenging your last answer</strong>"
+      : q.isFollowUp
+        ? " &middot; follow-up"
+        : "";
 
     main().innerHTML = `
       <div class="shell page interview-shell">
@@ -1651,17 +1992,17 @@ async function viewInterviewRun(id) {
             <div class="officer-badge">
               <span class="who">CO</span>
               <div>
-                <b>${esc(session.mode.charAt(0).toUpperCase() + session.mode.slice(1))} officer</b>
-                <div class="muted">Question ${q.number} of ${q.total}${q.isFollowUp ? " &middot; follow-up" : ""}</div>
+                <b>${runtime.exam ? "Consular officer" : `${esc(session.mode.charAt(0).toUpperCase() + session.mode.slice(1))} officer`}</b>
+                <div class="muted">Question ${q.number}${runtime.exam ? "" : ` &middot; up to ${q.total}`}${followUpNote}</div>
               </div>
             </div>
             <button class="btn btn-ghost btn-sm" id="finishBtn" type="button"${runtime.answered ? "" : " disabled"}>End and get report</button>
           </div>
-          <div class="meter-track" style="margin-top:14px"><div class="meter-fill" style="width:${progress}%"></div></div>
+          ${runtime.exam ? "" : `<div class="meter-track" style="margin-top:14px"><div class="meter-fill" style="width:${progress}%"></div></div>`}
         </div>
 
         <div class="card" style="margin-top:16px">
-          <span class="pill pill-brand">${esc(q.category)}</span>
+          ${runtime.exam ? "" : `<span class="pill pill-brand">${esc(q.category)}</span>`}
           <p class="question-text">${esc(q.question)}</p>
 
           <div class="row" style="margin-top:16px">
@@ -1673,14 +2014,21 @@ async function viewInterviewRun(id) {
           <div class="field-group" style="margin-top:18px">
             <label class="label" for="answerBox">Your answer</label>
             <textarea id="answerBox" rows="5" placeholder="Speak, or type your answer here...">${esc(runtime.answer)}</textarea>
-            <div class="answer-meta"><span id="wordCount">0 words</span><span>Three or four sentences is the target.</span></div>
+            ${runtime.exam ? "" : `<div class="answer-meta"><span id="wordCount">0 words</span><span id="lengthHint">Aim for 20-40 seconds spoken.</span></div>`}
           </div>
 
           <div id="reviewSlot"></div>
 
           <div class="row" style="margin-top:16px;border-top:1px solid var(--line);padding-top:16px">
             <button class="btn btn-primary" id="submitBtn" type="button">Submit answer</button>
-            <span class="muted">The officer does not coach you during the interview - feedback comes after each answer and at the end.</span>
+            <span class="muted">
+              Press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> to submit.
+              ${
+                runtime.exam
+                  ? "Interview day: no feedback until the officer has finished with you."
+                  : "The officer does not coach you during the interview - feedback comes after each answer and at the end."
+              }
+            </span>
           </div>
         </div>
 
@@ -1704,13 +2052,38 @@ async function viewInterviewRun(id) {
       </div>`;
 
     const box = $("#answerBox");
+    // Live estimate of how long the answer takes to SAY, whether it is typed
+    // or spoken - the officer only ever hears the saying.
     const updateCount = () => {
+      runtime.answer = box.value;
+      if (runtime.exam) return;
       const n = box.value.trim() ? box.value.trim().split(/\s+/).length : 0;
-      $("#wordCount").textContent = `${n} word${n === 1 ? "" : "s"}`;
+      const spoken = spokenSeconds(box.value);
+      $("#wordCount").textContent = `${n} word${n === 1 ? "" : "s"}${n ? ` · about ${spoken}s spoken` : ""}`;
+      const hint = $("#lengthHint");
+      if (spoken > 45) {
+        hint.textContent = "Too long - officers stop listening around 40 seconds.";
+        hint.className = "score-bad";
+      } else if (n && spoken < 8) {
+        hint.textContent = "Too short - add one concrete fact.";
+        hint.className = "score-warn";
+      } else {
+        hint.textContent = n ? "Good length." : "Aim for 20-40 seconds spoken.";
+        hint.className = n ? "score-good" : "";
+      }
       runtime.answer = box.value;
     };
     box.addEventListener("input", updateCount);
     updateCount();
+
+    // Ctrl+Enter (Cmd+Enter on a Mac) submits, so a student typing answers
+    // never has to reach for the mouse between questions.
+    box.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        void submitAnswer();
+      }
+    });
 
     $("#repeatBtn")?.addEventListener("click", () => speak(q.question));
 
@@ -1731,6 +2104,7 @@ async function viewInterviewRun(id) {
         }
       );
       if (started) {
+        runtime.usedVoice = true;
         $("#micBtn").textContent = "Stop recording";
         $("#micState").textContent = "listening...";
       } else {
@@ -1739,7 +2113,18 @@ async function viewInterviewRun(id) {
     });
 
     $("#submitBtn").addEventListener("click", submitAnswer);
-    $("#finishBtn").addEventListener("click", finishInterview);
+
+    // Ending early is irreversible - the interview is scored and closed - so
+    // confirm it. The officer has not decided yet, which the report reflects.
+    $("#finishBtn").addEventListener("click", () => {
+      const ok = window.confirm(
+        `End the interview now and get your report?\n\n` +
+          `You have answered ${runtime.answered} question${runtime.answered === 1 ? "" : "s"} and the officer ` +
+          `has not made a decision yet. If they have not covered your studies, funding and plans, ` +
+          `the report will mark this interview incomplete. It cannot be resumed.`
+      );
+      if (ok) void finishInterview();
+    });
 
     runtime.askedAt = Date.now();
   };
@@ -1755,11 +2140,15 @@ async function viewInterviewRun(id) {
     stopSpeaking();
 
     const button = $("#submitBtn");
-    setBusy(button, true, "Scoring...");
+    setBusy(button, true, runtime.exam ? "..." : "Scoring...");
     try {
       const data = await api(`/api/interviews/${id}/answer`, {
         method: "POST",
-        body: { answer, seconds: Math.round((Date.now() - runtime.askedAt) / 1000) },
+        body: {
+          answer,
+          seconds: Math.round((Date.now() - runtime.askedAt) / 1000),
+          inputMode: runtime.usedVoice ? "voice" : "typed",
+        },
       });
 
       runtime.transcript.push({
@@ -1769,11 +2158,33 @@ async function viewInterviewRun(id) {
         feedback: data.feedback,
       });
       runtime.answered = data.answered;
-      runtime.total = data.total;
+      runtime.total = data.total ?? runtime.total;
       runtime.answer = "";
-      runtime.lastReview = { scores: data.scores, feedback: data.feedback };
+      runtime.challenged = Boolean(data.challenged);
+      runtime.lastReview = runtime.exam ? null : { scores: data.scores, feedback: data.feedback, spoken: data.spoken };
+      if (runtime.exam) runtime.transcript = [];
+      runtime.usedVoice = false;
 
       if (data.done) {
+        // The officer decided. An early approval is the moment the whole
+        // practice is aiming for, so it gets said out loud, like at the window.
+        if (data.endedReason === "approved_early") {
+          const line = "Thank you. Your visa is approved.";
+          speak(line);
+          main().innerHTML = `
+            <div class="shell page interview-shell">
+              <div class="card approved-card">
+                <p class="eyebrow">The officer has decided</p>
+                <h1>&ldquo;${line}&rdquo;</h1>
+                <p class="lede">
+                  The officer was convinced after ${data.answered} questions and did not need to ask the rest.
+                  In a real interview, this is what a strong applicant sounds like.
+                </p>
+                <p class="muted" style="margin-top:12px">Writing up your report...</p>
+              </div>
+            </div>`;
+          await new Promise((resolve) => setTimeout(resolve, 2600));
+        }
         await finishInterview();
         return;
       }
@@ -1781,6 +2192,9 @@ async function viewInterviewRun(id) {
       runtime.question = data.question;
       renderQuestion();
       showReview(runtime.lastReview);
+      // On a phone the student is scrolled down at the Submit button, so the
+      // new question would appear off-screen above them. Bring it into view.
+      $(".question-text")?.closest(".card")?.scrollIntoView({ block: "start", behavior: "instant" });
       setTimeout(() => speak(runtime.question.question), 700);
     } catch (error) {
       toast(error.message, "error");
@@ -1800,6 +2214,7 @@ async function viewInterviewRun(id) {
           <div><b class="score-${scoreClass(review.scores.clarity)}">${review.scores.clarity}</b> Clarity</div>
         </div>
         <p style="margin-top:8px;font-size:14px;color:var(--ink-soft)">${esc(review.feedback)}</p>
+        ${review.spoken ? `<p class="muted" style="margin-top:6px">${esc(review.spoken.note)}</p>` : ""}
       </div>`;
   };
 
@@ -1818,7 +2233,11 @@ async function viewInterviewRun(id) {
     }
   };
 
-  if (session.answered > 0 && session.question) {
+  if (session.answered > 0 && !session.question) {
+    // The officer had already decided when the page was closed - go straight
+    // to the report rather than showing a "Begin" button with nothing behind it.
+    await finishInterview();
+  } else if (session.answered > 0 && session.question) {
     // Resuming a session that was left open.
     runtime.started = true;
     renderQuestion();
@@ -1846,19 +2265,23 @@ async function viewResults(id) {
   const flags = insights("red_flag").sort(
     (a, b) => ({ high: 0, medium: 1, low: 2 }[a.severity] ?? 3) - ({ high: 0, medium: 1, low: 2 }[b.severity] ?? 3)
   );
+  const answeredQs = results.questions.filter((q) => q.answer);
+  // Planned questions the officer never needed to ask - worth practising anyway.
+  const unasked = results.questions.filter((q) => !q.answer && !q.isFollowUp);
 
   main().innerHTML = `
     <div class="shell page" style="max-width:960px">
       <div class="card">
         <div class="spread">
           <div>
-            <p class="eyebrow">Interview report</p>
+            <p class="eyebrow">${results.examMode ? "Interview-day report" : "Interview report"}</p>
             <h1 style="font-size:26px">${esc(results.mode.charAt(0).toUpperCase() + results.mode.slice(1))} officer</h1>
+            ${results.examMode ? `<p style="margin-top:4px;font-size:14.5px;color:var(--ink-soft)">Interview-day mode - this is who you drew. No scores or hints were shown while you answered.</p>` : ""}
             <p class="muted" style="margin-top:6px">
-              ${formatDate(results.completedAt)} &middot; ${results.questions.filter((q) => q.answer).length} answers graded
+              ${formatDate(results.completedAt)} &middot; ${answeredQs.length} answer${answeredQs.length === 1 ? "" : "s"} graded
               &middot; ${results.engine === "provider" ? `AI engine (${esc(results.modelUsed || "provider")})` : "built-in engine"}
             </p>
-            <div style="margin-top:12px">${verdictPill(results.verdict)}</div>
+            <div class="row" style="margin-top:12px;gap:8px">${rankPill(results.rank)} ${verdictPill(results.verdict)}${results.examMode ? ` <span class="pill pill-accent">interview day</span>` : ""}</div>
           </div>
           ${ring(results.overallScore, "overall")}
         </div>
@@ -1866,6 +2289,30 @@ async function viewResults(id) {
           ${esc(results.summary)}
         </p>
       </div>
+
+      ${confidenceCard(results)}
+
+      ${
+        unasked.length
+          ? `<div class="card" style="margin-top:18px">
+              <h2 style="font-size:18px">${
+                results.endedReason === "approved_early"
+                  ? "Questions the officer didn't need to ask you"
+                  : "Questions the interview didn't reach"
+              }</h2>
+              <p style="margin-top:6px;font-size:14px;color:var(--ink-soft)">
+                ${
+                  results.endedReason === "approved_early"
+                    ? "A different officer on a different day might ask these. Practise them anyway - an early approval here is no guarantee the real officer stops as soon."
+                    : "Worth preparing before the real interview."
+                }
+              </p>
+              <ul class="unasked-list">
+                ${unasked.map((q) => `<li><span class="pill pill-brand">${esc(q.category)}</span> ${esc(q.question)}</li>`).join("")}
+              </ul>
+            </div>`
+          : ""
+      }
 
       <div class="grid grid-2" style="margin-top:18px">
         <div class="card">
@@ -1923,6 +2370,19 @@ async function viewResults(id) {
           : ""
       }
 
+      ${
+        results.storyIssues?.length
+          ? `<div class="card" style="margin-top:18px">
+              <h2 style="font-size:18px">Your story does not add up</h2>
+              <p style="margin-top:6px;font-size:14px;color:var(--ink-soft)">
+                Facts from this interview that differ from your file or from what you said before. The officer only hears one
+                version - make it the true one, every time.
+              </p>
+              <div style="margin-top:16px">${results.storyIssues.map(storyIssue).join("")}</div>
+            </div>`
+          : ""
+      }
+
       <h2 style="font-size:21px;margin-top:36px">Answer by answer</h2>
       <div style="margin-top:16px">
         ${results.questions
@@ -1939,7 +2399,8 @@ async function viewResults(id) {
               </div>
             </div>
             <p style="margin-top:14px;font-family:var(--font-display);font-size:17px">${esc(q.question)}</p>
-            <div class="qa-answer"><b style="font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint)">You said</b>
+            <div class="qa-answer"><div class="spread"><b style="font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint)">You said</b>
+              <span class="score-${spokenClass(spokenSeconds(q.answer))}" style="font-size:12.5px">about ${spokenSeconds(q.answer)}s spoken</span></div>
               <p style="margin-top:6px">${esc(q.answer)}</p></div>
             <p style="margin-top:12px;font-size:14.5px;color:var(--ink-soft)"><b style="color:var(--ink)">Officer's note:</b> ${esc(q.feedback || "")}</p>
 
@@ -1954,6 +2415,8 @@ async function viewResults(id) {
               <p style="font-size:14.5px">${esc(q.improvedAnswer || "")}</p>
               <p class="muted" style="margin-top:8px">A framework, not a script. Say it in your own words - officers recognise memorised answers.</p>
             </div>
+
+            ${retryBlock(q)}
           </article>`
           )
           .join("")}
@@ -1977,6 +2440,158 @@ async function viewResults(id) {
         prediction, and NIEC Visa AI cannot guarantee a visa outcome.
       </p>
     </div>`;
+
+  bindRetries(id, results);
+}
+
+/* ---- practise one answer again (from the report) ---- */
+
+const overallOf = (s) => Math.round(s.answer * 0.55 + s.tone * 0.2 + s.clarity * 0.25);
+
+function retryAttempts(q) {
+  if (!q.retries?.length) return "";
+  const first = overallOf(q.scores);
+  return `
+    <div class="retry-history">
+      <b class="retry-label">Your practice attempts</b>
+      ${q.retries
+        .map((r, i) => {
+          const change = overallOf(r.scores) - first;
+          return `
+          <div class="retry-attempt">
+            <div class="spread">
+              <span class="muted">Attempt ${i + 1} · about ${spokenSeconds(r.answer)}s spoken</span>
+              <span><b class="score-${scoreClass(overallOf(r.scores))}">${overallOf(r.scores)}</b>
+                <span class="${change > 0 ? "score-good" : change < 0 ? "score-bad" : "muted"}">(${change > 0 ? "+" : ""}${change} vs interview)</span></span>
+            </div>
+            <p style="margin-top:6px;font-size:14px">${esc(r.answer)}</p>
+            ${r.redFlags?.length ? `<p class="score-bad" style="margin-top:6px;font-size:13px">Still raises: ${r.redFlags.map(esc).join(", ")}</p>` : ""}
+          </div>`;
+        })
+        .join("")}
+    </div>`;
+}
+
+function retryBlock(q) {
+  return `
+    <div class="retry" data-position="${q.position}">
+      <div class="retry-attempts">${retryAttempts(q)}</div>
+      <button class="btn btn-secondary btn-sm retry-open" type="button">Practise this answer again</button>
+      <div class="retry-form" hidden>
+        <label class="retry-label" for="retry-${q.position}">Answer it again, in your own words</label>
+        <textarea id="retry-${q.position}" class="retry-box" rows="4" maxlength="4000"
+          placeholder="Use the stronger version as a guide, not a script."></textarea>
+        <div class="answer-meta"><span class="retry-count">0 words</span><span>Aim for 20-40 seconds spoken.</span></div>
+        <div class="row" style="margin-top:10px">
+          <button class="btn btn-primary btn-sm retry-submit" type="button">Score my new answer</button>
+          ${RecognitionCtor ? `<button class="btn btn-ghost btn-sm retry-mic" type="button">Record</button>` : ""}
+          <button class="btn btn-ghost btn-sm retry-cancel" type="button">Cancel</button>
+        </div>
+        <div class="retry-result" aria-live="polite"></div>
+        <p class="muted" style="margin-top:8px">Practice only - this interview's score and ranking stay as they were.</p>
+      </div>
+    </div>`;
+}
+
+function bindRetries(interviewId, results) {
+  for (const block of document.querySelectorAll(".retry")) {
+    const position = Number(block.dataset.position);
+    const question = results.questions.find((q) => q.position === position);
+    const form = block.querySelector(".retry-form");
+    const open = block.querySelector(".retry-open");
+    const box = block.querySelector(".retry-box");
+    const count = block.querySelector(".retry-count");
+    const submit = block.querySelector(".retry-submit");
+    const mic = block.querySelector(".retry-mic");
+    const out = block.querySelector(".retry-result");
+
+    const updateCount = () => {
+      const n = box.value.trim() ? box.value.trim().split(/\s+/).length : 0;
+      const seconds = spokenSeconds(box.value);
+      count.textContent = `${n} word${n === 1 ? "" : "s"}${n ? ` · about ${seconds}s spoken` : ""}`;
+      count.className = n ? `retry-count score-${spokenClass(seconds)}` : "retry-count";
+    };
+    box.addEventListener("input", updateCount);
+
+    open.addEventListener("click", () => {
+      form.hidden = false;
+      open.hidden = true;
+      box.focus();
+    });
+    block.querySelector(".retry-cancel").addEventListener("click", () => {
+      if (speech.listening) stopListening();
+      form.hidden = true;
+      open.hidden = false;
+    });
+
+    mic?.addEventListener("click", () => {
+      if (speech.listening) {
+        stopListening();
+        return;
+      }
+      const started = startListening(
+        box.value,
+        (text) => {
+          box.value = text;
+          updateCount();
+        },
+        () => {
+          mic.textContent = "Record";
+        }
+      );
+      if (started) mic.textContent = "Stop";
+      else toast("Could not start the microphone. Type your answer instead.", "error");
+    });
+
+    const send = async () => {
+      const answer = box.value.trim();
+      if (!answer) {
+        toast("Say or type your new answer first.", "error");
+        return;
+      }
+      if (speech.listening) stopListening();
+      submit.disabled = true;
+      submit.textContent = "Scoring...";
+      try {
+        const data = await api(`/api/interviews/${interviewId}/questions/${position}/retry`, {
+          method: "POST",
+          body: { answer },
+        });
+        const before = overallOf(data.before);
+        const after = overallOf(data.scores);
+        out.innerHTML = `
+          <div class="retry-compare">
+            <div><span class="muted">In the interview</span><b class="score-${scoreClass(before)}">${before}</b></div>
+            <div class="retry-arrow" aria-hidden="true">→</div>
+            <div><span class="muted">This attempt</span><b class="score-${scoreClass(after)}">${after}</b></div>
+            <div><span class="muted">Change</span><b class="${data.change > 0 ? "score-good" : data.change < 0 ? "score-bad" : ""}">${data.change > 0 ? "+" : ""}${data.change}</b></div>
+          </div>
+          <p style="margin-top:10px;font-size:14px">${esc(data.feedback)}</p>
+          <p class="muted" style="margin-top:4px">${esc(data.spoken?.note || "")}</p>
+          ${
+            data.redFlags.length
+              ? `<p class="score-bad" style="margin-top:6px;font-size:13.5px"><b>Still raises a red flag:</b> ${data.redFlags.map((f) => esc(f.label)).join(", ")}</p>`
+              : ""
+          }`;
+        question.retries = data.retries;
+        block.querySelector(".retry-attempts").innerHTML = retryAttempts(question);
+        box.value = "";
+        updateCount();
+      } catch (error) {
+        toast(error.message, "error");
+      } finally {
+        submit.disabled = false;
+        submit.textContent = "Score my new answer";
+      }
+    };
+    submit.addEventListener("click", send);
+    box.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        void send();
+      }
+    });
+  }
 }
 
 /* ---- coach ---- */
@@ -2056,9 +2671,17 @@ async function viewCoach() {
 }
 
 function coachEntryHtml(entry, expanded = false) {
+  // When the question contradicts the student's own file, that contradiction
+  // is the most important thing on the page, so it goes first, in red.
+  const conflictFirst = expanded && entry.premiseConflict && entry.warning;
   return `
     <div style="${expanded ? "" : "border-top:1px solid var(--line);padding-top:14px;margin-top:14px"}">
       <p class="muted" style="text-transform:uppercase;letter-spacing:.08em">${esc(entry.question)}</p>
+      ${
+        conflictFirst
+          ? `<div class="alert alert-error" style="margin-top:12px"><b>Check your file first:</b> ${esc(entry.warning)}</div>`
+          : ""
+      }
       <p style="margin-top:10px;font-size:15px;line-height:1.7">${esc(entry.answer)}</p>
       ${
         expanded
@@ -2067,7 +2690,11 @@ function coachEntryHtml(entry, expanded = false) {
               <div class="coach-card"><h4>How to say it</h4><p>${esc(entry.howToSayIt || "")}</p></div>
               <div class="coach-card"><h4>Why it works</h4><p>${esc(entry.whyItWorks || "")}</p></div>
             </div>
-            ${entry.warning ? `<div class="alert alert-warn" style="margin-top:14px"><b>Avoid:</b> ${esc(entry.warning)}</div>` : ""}
+            ${
+              entry.warning && !conflictFirst
+                ? `<div class="alert alert-warn" style="margin-top:14px"><b>Avoid:</b> ${esc(entry.warning)}</div>`
+                : ""
+            }
             <p class="muted" style="margin-top:12px">Use this as a framework, not a script. A word-for-word delivery sounds rehearsed, and rehearsed is a red flag of its own.</p>`
           : ""
       }
@@ -2406,11 +3033,14 @@ const ROUTES = [
   [/^\/results\/([\w-]+)$/, (m) => viewResults(m[1])],
   [/^\/history$/, viewHistory],
   [/^\/analytics$/, viewAnalytics],
+  [/^\/documents$/, viewDocuments],
   [/^\/coach$/, viewCoach],
   [/^\/resources$/, viewResources],
   [/^\/resources\/([\w-]+)$/, (m) => viewResource(m[1])],
   [/^\/notifications$/, viewNotifications],
   [/^\/settings$/, viewSettings],
+  // Staff use the separate admin portal; old bookmarks still get there.
+  [/^\/(admin|staff)$/, () => location.replace("/admin/")],
   [/^\/privacy$/, viewPrivacy],
   [/^\/terms$/, viewTerms],
 ];
@@ -2443,7 +3073,9 @@ async function router() {
   if (anchor) {
     setTimeout(() => document.getElementById(anchor)?.scrollIntoView({ behavior: "smooth" }), 60);
   } else {
-    window.scrollTo({ top: 0, behavior: "instant" in window ? "instant" : "auto" });
+    // "instant", not "auto": the stylesheet sets smooth scrolling, and a new
+    // page should start at its top at once, not glide there.
+    window.scrollTo({ top: 0, behavior: "instant" });
   }
   main().focus({ preventScroll: true });
 }

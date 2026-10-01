@@ -96,10 +96,10 @@ server$ cd /opt/niec-visa-ai
 server$ chown -R niec:niec /opt/niec-visa-ai
 ```
 
-Create the production `.env`:
+Create the production `.env` from the ready-made template:
 
 ```
-server$ cp .env.example .env
+server$ cp deploy/production.env.example .env
 server$ nano .env
 ```
 
@@ -128,10 +128,12 @@ Then lock the file down — it holds your keys:
 server$ chmod 600 .env && chown niec:niec .env
 ```
 
-> **`DATA_ENCRYPTION_KEY` can be set once and never again.** Every student
-> profile and answer is encrypted with it. Change it later and all existing
-> data becomes permanently unreadable. Write it down somewhere safe and
-> separate from the server, today.
+> **Never edit `DATA_ENCRYPTION_KEY` by hand.** Every student profile and
+> answer is encrypted with it; change the line and all existing data becomes
+> unreadable. To change it safely, stop the server and run
+> `node scripts/rotate-key.mjs` - it re-encrypts everything, takes a backup
+> first, and writes the new key to `.env`. Keep a copy of `.env` somewhere
+> safe and separate from the server, today.
 
 Note `PUBLIC_API_URL` is the same domain as the app: Caddy routes `/api/*` to
 the backend, so the browser only ever talks to one origin and CORS never

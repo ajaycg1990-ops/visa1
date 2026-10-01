@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { config } from "../backend/src/config.mjs";
@@ -25,7 +25,7 @@ if (!existsSync(config.databaseFile)) {
 
 mkdirSync(config.backupDir, { recursive: true });
 
-const db = new Database(config.databaseFile, { readOnly: true });
+const db = new DatabaseSync(config.databaseFile, { readOnly: true });
 try {
   // The path is interpolated into SQL, so quote it the SQLite way ('' escapes ').
   db.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);

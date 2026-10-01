@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>NIEC Visa AI - Admin</title>
+    <!-- Staff only: keep it out of search engines. -->
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#0f3a56" />
+    <meta name="color-scheme" content="light dark" />
+
+    <link rel="icon" href="/assets/niec-logo.png" />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/admin/admin.css" />
+
+    <!-- Runtime API configuration, served by frontend/server.mjs -->
+    <script src="/runtime-config.js" defer></script>
+    <script src="/admin/admin.mjs" type="module"></script>
+  </head>
+
+  <body class="admin-body">
+    <a class="skip-link" href="#adminMain">Skip to content</a>
+    <div id="adminApp">
+      <p class="admin-loading">Loading the admin portal...</p>
+    </div>
+    <div class="toast-stack" id="toastStack" aria-live="polite" aria-atomic="false"></div>
+    <noscript>The admin portal needs JavaScript.</noscript>
+  </body>
+</html>

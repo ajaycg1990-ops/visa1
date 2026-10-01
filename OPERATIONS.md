@@ -77,6 +77,10 @@ on this page.
 
 ## What is watching things for you
 
+The admin portal's **System** page (`/admin/#/system`) shows the launch
+checks, the newest backup and the last week's server errors with their
+reference codes - the quickest place to look first.
+
 | Protection | What it does |
 | --- | --- |
 | **File logging** | Every request, warning and error, kept 30 days in `logs/` |
@@ -135,12 +139,16 @@ guess, not a backup.
 ## Before you host: the checklist
 
 - [ ] **Rotate the OpenAI key** and set a monthly spend limit at platform.openai.com
-- [ ] **Uncomment `DATA_ENCRYPTION_KEY`** in `.env` — and delete the demo
-      database first, since it was written with the development key
+- [x] **Replace the development `DATA_ENCRYPTION_KEY`** - done with
+      `node scripts/rotate-key.mjs`, which re-encrypts the existing data. Never
+      edit that line by hand.
 - [ ] **Store both secrets** somewhere safe and separate from the server
 - [ ] **Set `NODE_ENV=production`** (this refuses to boot on development secrets)
 - [ ] **Put HTTPS in front** — Caddy, nginx, or your host's built-in TLS
 - [ ] **Update `CORS_ORIGINS` and `PUBLIC_APP_URL`** to your real domain
+      (`deploy/production.env.example` has every production setting)
+- [ ] **Check the admin portal** at `https://<your domain>/admin/` - its System
+      page must show no blockers
 - [ ] **Schedule the backup** and copy backups off the machine
 - [ ] **Run `node tests/e2e.mjs`** on the server after the first deploy
 - [ ] **Push the git repo** to GitHub or GitLab (private), so the code survives

@@ -1,13 +1,10 @@
 {
-  "name": "niec-visa-ai-hosting-ready",
-  "version": "1.0.0",
+  "name": "niec-visa-ai",
   "private": true,
+  "version": "1.0.0",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": { "node": ">=22.5.0" },
   "scripts": {
     "start": "node start.mjs"
-  },
-  "dependencies": {
-    "better-sqlite3": "^12.2.0"
   }
 }

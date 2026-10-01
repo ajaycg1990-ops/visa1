@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { config } from "./config.mjs";
@@ -38,7 +38,7 @@ export function init() {
   if (db) return db;
 
   mkdirSync(path.dirname(config.databaseFile), { recursive: true });
-  db = new Database(config.databaseFile);
+  db = new DatabaseSync(config.databaseFile);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
 
@@ -46,9 +46,50 @@ export function init() {
     throw new Error(`Schema file not found at ${config.schemaFile}`);
   }
   db.exec(readFileSync(config.schemaFile, "utf8"));
+  migrate();
 
   if (config.seedDemo) seedDemoStudent();
   return db;
+}
+
+/**
+ * Additive migrations for databases created by an earlier version.
+ *
+ * `CREATE TABLE IF NOT EXISTS` leaves an existing table untouched, so a column
+ * added to schema.sql never reaches a database that already exists. Each step
+ * checks before it acts, so running this repeatedly is safe.
+ */
+function migrate() {
+  const columns = (table) => db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+
+  if (!columns("users").includes("role")) {
+    // SQLite cannot add a CHECK constraint to an existing table, so the
+    // constraint lives in schema.sql for new databases and the application
+    // enforces the same values (see setUserRole).
+    db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'student'");
+    console.log("[db] migration: added users.role");
+  }
+
+  // Adaptive interview length (officer confidence, early approval, ranking).
+  const add = (table, column, definition) => {
+    if (!columns(table).includes(column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+      console.log(`[db] migration: added ${table}.${column}`);
+    }
+  };
+  add("interviews", "confidence", "INTEGER");
+  add("interviews", "ended_reason", "TEXT");
+  add("interviews", "rank", "TEXT");
+  add("interview_questions", "is_required", "INTEGER NOT NULL DEFAULT 0");
+  add("interview_questions", "confidence_after", "INTEGER");
+  // Personal document checklist.
+  add("preferences", "checklist_done", "TEXT");
+  // Interview-day mode.
+  add("interviews", "exam_mode", "INTEGER NOT NULL DEFAULT 0");
+  // Live question choice and the uploadable question bank.
+  add("interviews", "required_topics", "TEXT");
+  add("interview_questions", "topic", "TEXT");
+  add("interview_questions", "origin", "TEXT");
 }
 
 export function close() {
@@ -167,10 +208,28 @@ export function publicUser(user) {
     id: user.id,
     email: user.email,
     fullName: user.full_name,
+    role: user.role ?? "student",
     hasPassword: Boolean(user.password_hash),
     googleLinked: Boolean(user.google_sub),
     createdAt: user.created_at,
   };
+}
+
+export function isAdmin(user) {
+  return (user?.role ?? "student") === "admin";
+}
+
+/** Promote or demote an account. Used by scripts/make-admin.mjs. */
+export function setUserRole(email, role) {
+  if (!["student", "admin"].includes(role)) throw new Error(`Unknown role: ${role}`);
+  const user = findUserByEmail(email);
+  if (!user) return null;
+  q("UPDATE users SET role = ? WHERE id = ?").run(role, user.id);
+  return findUserById(user.id);
+}
+
+export function listAdmins() {
+  return q("SELECT email, full_name FROM users WHERE role = 'admin' ORDER BY email").all();
 }
 
 /* -------------------------------- sessions -------------------------------- */
@@ -277,22 +336,44 @@ export function profileCompleteness(profile) {
 
 /* ------------------------------- interviews ------------------------------- */
 
-export function createInterview({ userId, mode, questionCount, profileSnapshot, engine }) {
+export function createInterview({ userId, mode, questionCount, profileSnapshot, engine, examMode = false, requiredTopics = null }) {
   const id = newId("int");
   q(
-    `INSERT INTO interviews (id, user_id, mode, status, question_count, profile_snapshot, engine, created_at)
-     VALUES (?, ?, ?, 'in_progress', ?, ?, ?, ?)`
-  ).run(id, userId, mode, questionCount, nn(encryptJson(profileSnapshot)), engine, nowIso());
+    `INSERT INTO interviews (id, user_id, mode, status, question_count, profile_snapshot, engine, exam_mode, required_topics, created_at)
+     VALUES (?, ?, ?, 'in_progress', ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    userId,
+    mode,
+    questionCount,
+    nn(encryptJson(profileSnapshot)),
+    engine,
+    flag(examMode),
+    requiredTopics ? JSON.stringify(requiredTopics) : null,
+    nowIso()
+  );
   return id;
 }
 
-export function addQuestion(interviewId, { position, category, question, isFollowUp = false }) {
+export function addQuestion(
+  interviewId,
+  { position, category, question, isFollowUp = false, isRequired = false, topic = null, origin = null }
+) {
   const id = newId("qst");
   q(
-    `INSERT INTO interview_questions (id, interview_id, position, category, question, is_follow_up)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(id, interviewId, position, category, encryptField(question), flag(isFollowUp));
+    `INSERT INTO interview_questions (id, interview_id, position, category, question, is_follow_up, is_required, topic, origin)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, interviewId, position, category, encryptField(question), flag(isFollowUp), flag(isRequired), nn(topic), nn(origin));
   return id;
+}
+
+/** Record the officer's running confidence and, once decided, why the interview ends. */
+export function updateInterviewProgress(interviewId, { confidence, endedReason = null }) {
+  q("UPDATE interviews SET confidence = ?, ended_reason = COALESCE(?, ended_reason) WHERE id = ?").run(
+    confidence,
+    nn(endedReason),
+    interviewId
+  );
 }
 
 /** Remove one unanswered question (used to make room for a follow-up drill). */
@@ -336,6 +417,12 @@ function mapInterview(row) {
     overallScore: row.overall_score,
     verdict: row.verdict,
     summary: decryptField(row.summary),
+    confidence: row.confidence ?? null,
+    endedReason: row.ended_reason ?? null,
+    rank: row.rank ?? null,
+    examMode: Boolean(row.exam_mode),
+    // null for interviews planned up front, before questions were chosen live.
+    requiredTopics: row.required_topics ? JSON.parse(row.required_topics) : null,
     createdAt: row.created_at,
     completedAt: row.completed_at,
   };
@@ -350,6 +437,10 @@ export function getQuestions(interviewId) {
       category: row.category,
       question: decryptField(row.question),
       isFollowUp: Boolean(row.is_follow_up),
+      isRequired: Boolean(row.is_required),
+      topic: row.topic ?? null,
+      origin: row.origin ?? null,
+      confidenceAfter: row.confidence_after ?? null,
       answer: decryptField(row.answer),
       answerSeconds: row.answer_seconds,
       scores: {
@@ -366,12 +457,12 @@ export function getQuestions(interviewId) {
     }));
 }
 
-export function saveAnswer(interviewId, position, { answer, seconds, scores, feedback, coaching }) {
+export function saveAnswer(interviewId, position, { answer, seconds, scores, feedback, coaching, confidenceAfter = null }) {
   q(
     `UPDATE interview_questions
         SET answer = ?, answer_seconds = ?, answer_score = ?, tone_score = ?, clarity_score = ?,
             feedback = ?, improved_answer = ?, what_to_say = ?, how_to_say_it = ?, why_it_works = ?,
-            answered_at = ?
+            confidence_after = ?, answered_at = ?
       WHERE interview_id = ? AND position = ?`
   ).run(
     encryptField(answer),
@@ -384,6 +475,7 @@ export function saveAnswer(interviewId, position, { answer, seconds, scores, fee
     nn(encryptField(coaching?.whatToSay)),
     nn(encryptField(coaching?.howToSayIt)),
     nn(encryptField(coaching?.whyItWorks)),
+    nn(confidenceAfter),
     nowIso(),
     interviewId,
     position
@@ -435,13 +527,29 @@ export function getInsights(interviewId) {
     }));
 }
 
-export function completeInterview(interviewId, { overallScore, verdict, summary, modelUsed, engine }) {
+export function completeInterview(
+  interviewId,
+  { overallScore, verdict, summary, modelUsed, engine, rank = null, endedReason = null, confidence = null }
+) {
   q(
     `UPDATE interviews
         SET status = 'completed', overall_score = ?, verdict = ?, summary = ?,
-            model_used = ?, engine = ?, completed_at = ?
+            model_used = ?, engine = ?, rank = ?,
+            ended_reason = COALESCE(ended_reason, ?), confidence = COALESCE(?, confidence),
+            completed_at = ?
       WHERE id = ?`
-  ).run(overallScore, verdict, nn(encryptField(summary)), nn(modelUsed), engine, nowIso(), interviewId);
+  ).run(
+    overallScore,
+    verdict,
+    nn(encryptField(summary)),
+    nn(modelUsed),
+    engine,
+    nn(rank),
+    nn(endedReason),
+    nn(confidence),
+    nowIso(),
+    interviewId
+  );
 }
 
 export function listInterviews(userId, limit = 50) {
@@ -465,13 +573,124 @@ export function countAnswered(interviewId) {
   return row?.n ?? 0;
 }
 
+/* ------------------------------- question bank ---------------------------- */
+
+function mapBankQuestion(row) {
+  return {
+    id: row.id,
+    question: row.question,
+    category: row.category,
+    topic: row.topic ?? null,
+    active: Boolean(row.active),
+    createdAt: row.created_at,
+  };
+}
+
+export function listBankQuestions({ activeOnly = false } = {}) {
+  return q(`SELECT * FROM bank_questions ${activeOnly ? "WHERE active = 1" : ""} ORDER BY created_at DESC, rowid DESC`)
+    .all()
+    .map(mapBankQuestion);
+}
+
+/**
+ * Add parsed questions, skipping any already in the bank (same words, any
+ * case or punctuation). Returns what was added and how many were duplicates.
+ */
+export function addBankQuestions(items, { createdBy = null, normalize }) {
+  const exists = q("SELECT 1 FROM bank_questions WHERE norm = ?");
+  const insert = q(
+    `INSERT INTO bank_questions (id, question, norm, category, topic, active, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, 1, ?, ?)`
+  );
+  const added = [];
+  let duplicates = 0;
+  const seen = new Set();
+  init().exec("BEGIN");
+  try {
+    for (const item of items) {
+      const norm = normalize(item.question);
+      if (!norm || seen.has(norm) || exists.get(norm)) {
+        duplicates += 1;
+        continue;
+      }
+      seen.add(norm);
+      const id = newId("bq");
+      insert.run(id, item.question, norm, item.category, nn(item.topic), nn(createdBy), nowIso());
+      added.push({ id, ...item });
+    }
+    init().exec("COMMIT");
+  } catch (error) {
+    init().exec("ROLLBACK");
+    throw error;
+  }
+  return { added, duplicates };
+}
+
+export function setBankQuestionActive(id, active) {
+  const result = q("UPDATE bank_questions SET active = ? WHERE id = ?").run(flag(active), id);
+  return result.changes > 0;
+}
+
+export function deleteBankQuestion(id) {
+  return q("DELETE FROM bank_questions WHERE id = ?").run(id).changes > 0;
+}
+
+/* ------------------------------ answer retries ---------------------------- */
+
+/** Attempts kept per question - the oldest drop off beyond this. */
+const RETRIES_KEPT = 5;
+
+export function addRetry(interviewId, position, { answer, scores, feedback, redFlags = [] }) {
+  q(
+    `INSERT INTO answer_retries (id, interview_id, position, answer, answer_score, tone_score, clarity_score,
+                                 feedback, red_flags, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    newId("rty"),
+    interviewId,
+    position,
+    encryptField(answer),
+    scores.answer,
+    scores.tone,
+    scores.clarity,
+    nn(encryptField(feedback)),
+    JSON.stringify(redFlags.map((f) => f.label)),
+    nowIso()
+  );
+  q(
+    `DELETE FROM answer_retries
+      WHERE interview_id = ? AND position = ?
+        AND id NOT IN (SELECT id FROM answer_retries WHERE interview_id = ? AND position = ?
+                        ORDER BY created_at DESC, rowid DESC LIMIT ?)`
+  ).run(interviewId, position, interviewId, position, RETRIES_KEPT);
+}
+
+/** Retries for one interview, oldest first, grouped by question position. */
+export function getRetries(interviewId) {
+  const byPosition = {};
+  for (const row of q(
+    "SELECT * FROM answer_retries WHERE interview_id = ? ORDER BY created_at ASC, rowid ASC"
+  ).all(interviewId)) {
+    (byPosition[row.position] ??= []).push({
+      id: row.id,
+      answer: decryptField(row.answer),
+      scores: { answer: row.answer_score, tone: row.tone_score, clarity: row.clarity_score },
+      feedback: decryptField(row.feedback),
+      redFlags: JSON.parse(row.red_flags || "[]"),
+      createdAt: row.created_at,
+    });
+  }
+  return byPosition;
+}
+
 /** Everything needed to render a results page. */
 export function getFullInterview(interviewId) {
   const interview = getInterview(interviewId);
   if (!interview) return null;
+  const retries = getRetries(interviewId);
   return {
     ...interview,
-    questions: getQuestions(interviewId),
+    questions: getQuestions(interviewId).map((question) => ({ ...question, retries: retries[question.position] ?? [] })),
     categoryScores: getCategoryScores(interviewId),
     insights: getInsights(interviewId),
   };
@@ -577,6 +796,22 @@ export function getPreferences(userId) {
   };
 }
 
+/** Ids of the ticked document-checklist items. */
+export function getChecklistDone(userId) {
+  getPreferences(userId); // makes sure the row exists
+  const row = q("SELECT checklist_done FROM preferences WHERE user_id = ?").get(userId);
+  try {
+    return JSON.parse(row?.checklist_done || "[]");
+  } catch {
+    return [];
+  }
+}
+
+export function saveChecklistDone(userId, ids) {
+  getPreferences(userId);
+  q("UPDATE preferences SET checklist_done = ?, updated_at = ? WHERE user_id = ?").run(JSON.stringify(ids), nowIso(), userId);
+}
+
 export function savePreferences(userId, { theme, marketingOptIn, productEmails }) {
   const current = getPreferences(userId);
   const next = {
@@ -628,6 +863,7 @@ export function exportUserData(userId) {
     account: publicUser(user),
     profile: getProfile(userId),
     preferences: getPreferences(userId),
+    documentChecklistTicked: getChecklistDone(userId),
     interviews,
     customQuestions: listCustomQuestions(userId, 500),
     notifications: listNotifications(userId, 500),
@@ -709,6 +945,136 @@ export function analytics(userId) {
     },
     recommended: categories.filter((c) => c.average < 75).slice(0, 3).map((c) => c.category),
   };
+}
+
+/* --------------------------- admin reporting ------------------------------ */
+
+/**
+ * Aggregate reporting for NIEC staff.
+ *
+ * Everything below deliberately returns counts, dates and scores only. No
+ * function here decrypts an answer, a profile field or coaching text: students
+ * entered sponsor income, savings and refusal history on the understanding
+ * that nobody reads it, and the privacy policy says so. Keep it that way -
+ * if NIEC ever needs answer-level access, it should be a student opt-in, not
+ * a quiet widening of this file.
+ */
+export function adminOverview() {
+  const one = (sql, ...params) => q(sql).get(...params);
+
+  const totals = {
+    students: one("SELECT COUNT(*) n FROM users WHERE role = 'student'").n,
+    admins: one("SELECT COUNT(*) n FROM users WHERE role = 'admin'").n,
+    interviews: one("SELECT COUNT(*) n FROM interviews").n,
+    completed: one("SELECT COUNT(*) n FROM interviews WHERE status = 'completed'").n,
+    inProgress: one("SELECT COUNT(*) n FROM interviews WHERE status = 'in_progress'").n,
+    coachQuestions: one("SELECT COUNT(*) n FROM custom_questions").n,
+    openDataRequests: one("SELECT COUNT(*) n FROM data_requests WHERE status != 'completed'").n,
+  };
+
+  const scores = one(
+    "SELECT AVG(overall_score) avg, MIN(overall_score) min, MAX(overall_score) max FROM interviews WHERE status = 'completed'"
+  );
+
+  const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const recent = {
+    signups: one("SELECT COUNT(*) n FROM users WHERE created_at >= ?", since).n,
+    interviews: one("SELECT COUNT(*) n FROM interviews WHERE created_at >= ?", since).n,
+  };
+
+  // Daily activity for the last 14 days, for a simple trend line.
+  const activity = q(
+    `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS interviews
+       FROM interviews
+      WHERE created_at >= ?
+      GROUP BY day ORDER BY day ASC`
+  ).all(new Date(Date.now() - 14 * 86_400_000).toISOString());
+
+  const verdicts = q(
+    "SELECT verdict, COUNT(*) n FROM interviews WHERE verdict IS NOT NULL GROUP BY verdict"
+  ).all();
+
+  const modes = q("SELECT mode, COUNT(*) n FROM interviews GROUP BY mode").all();
+
+  // Which categories students struggle with most, across everyone. Useful for
+  // deciding what NIEC should teach in person.
+  const weakest = q(
+    `SELECT category, ROUND(AVG(score)) AS average, COUNT(*) AS samples
+       FROM interview_scores GROUP BY category ORDER BY average ASC`
+  ).all();
+
+  return {
+    totals,
+    scores: {
+      average: scores.avg === null ? null : Math.round(scores.avg),
+      lowest: scores.min,
+      highest: scores.max,
+    },
+    recent,
+    activity,
+    verdicts,
+    modes,
+    categories: weakest,
+  };
+}
+
+/**
+ * One row per account for the admin list. Counts and dates only - no profile
+ * fields, and nothing that reveals what a student wrote.
+ */
+export function adminStudents(limit = 200) {
+  return q(
+    `SELECT u.id, u.email, u.full_name, u.role, u.created_at, u.last_login_at,
+            (SELECT COUNT(*) FROM interviews i WHERE i.user_id = u.id) AS interviews,
+            (SELECT COUNT(*) FROM interviews i WHERE i.user_id = u.id AND i.status = 'completed') AS completed,
+            (SELECT ROUND(AVG(i.overall_score)) FROM interviews i WHERE i.user_id = u.id AND i.status = 'completed') AS average_score,
+            (SELECT MAX(i.created_at) FROM interviews i WHERE i.user_id = u.id) AS last_interview_at,
+            (SELECT COUNT(*) FROM custom_questions c WHERE c.user_id = u.id) AS coach_questions,
+            EXISTS(SELECT 1 FROM profiles p WHERE p.user_id = u.id) AS has_profile
+       FROM users u
+      ORDER BY u.created_at DESC
+      LIMIT ?`
+  )
+    .all(limit)
+    .map((row) => ({
+      id: row.id,
+      email: row.email,
+      fullName: row.full_name,
+      role: row.role ?? "student",
+      createdAt: row.created_at,
+      lastLoginAt: row.last_login_at,
+      interviews: row.interviews,
+      completed: row.completed,
+      averageScore: row.average_score,
+      lastInterviewAt: row.last_interview_at,
+      coachQuestions: row.coach_questions,
+      hasProfile: Boolean(row.has_profile),
+    }));
+}
+
+/** Every outstanding data access or deletion request, across all accounts. */
+export function adminDataRequests() {
+  return q(
+    `SELECT r.id, r.kind, r.status, r.note, r.created_at, r.completed_at, u.email, u.full_name
+       FROM data_requests r JOIN users u ON u.id = r.user_id
+      ORDER BY (r.status = 'completed'), r.created_at DESC`
+  )
+    .all()
+    .map((row) => ({
+      id: row.id,
+      kind: row.kind,
+      status: row.status,
+      note: row.note,
+      createdAt: row.created_at,
+      completedAt: row.completed_at,
+      email: row.email,
+      fullName: row.full_name,
+    }));
+}
+
+export function completeDataRequest(id) {
+  q("UPDATE data_requests SET status = 'completed', completed_at = ? WHERE id = ?").run(nowIso(), id);
+  return q("SELECT * FROM data_requests WHERE id = ?").get(id) ?? null;
 }
 
 /* ------------------------------- demo seed -------------------------------- */

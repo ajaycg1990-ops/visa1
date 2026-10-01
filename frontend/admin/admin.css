@@ -1,0 +1,302 @@
+/* =========================================================================
+   NIEC Visa AI - admin portal layout.
+   Builds on /styles.css (tokens, cards, tables, buttons); this file only adds
+   the portal's own shell: a sidebar on desktop, a top bar on a phone.
+   ========================================================================= */
+
+.admin-body {
+  display: block;
+}
+
+.admin-loading {
+  padding: 48px 24px;
+  color: var(--ink-soft);
+}
+
+.admin-shell {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+/* ------------------------------- sidebar -------------------------------- */
+
+.admin-side {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 22px 16px;
+  background: var(--card);
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+}
+
+.admin-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px;
+  text-decoration: none;
+}
+
+.admin-brand img {
+  height: 34px;
+  width: auto;
+}
+
+.admin-brand span {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+
+.admin-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.admin-nav a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-soft);
+  font-size: 14.5px;
+  text-decoration: none;
+}
+
+.admin-nav a:hover {
+  background: var(--surface);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.admin-nav a[aria-current="page"] {
+  background: var(--brand-soft);
+  color: var(--brand-dark);
+  font-weight: 600;
+}
+
+.admin-badge {
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.admin-side-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.admin-user {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.admin-user b {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.admin-user span {
+  color: var(--ink-faint);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-site-link {
+  font-size: 13px;
+}
+
+/* -------------------------------- content -------------------------------- */
+
+.admin-main {
+  min-width: 0;
+  outline: none;
+}
+
+.admin-page {
+  max-width: 1120px;
+  padding: 32px 32px 64px;
+}
+
+.admin-head {
+  margin-bottom: 22px;
+}
+
+.admin-head h1 {
+  font-size: 28px;
+}
+
+.admin-head p {
+  max-width: 72ch;
+}
+
+.admin-attention .list-row {
+  margin-top: 10px;
+}
+
+.admin-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.admin-dot-bad {
+  background: var(--bad);
+}
+
+.admin-dot-warn {
+  background: var(--warn);
+}
+
+.admin-dot-info {
+  background: var(--brand);
+}
+
+.admin-check-group {
+  margin-top: 18px;
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.admin-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-check:last-child {
+  border-bottom: 0;
+}
+
+.admin-check .pill {
+  flex: none;
+  width: 88px;
+  justify-content: center;
+  text-align: center;
+}
+
+.admin-check b {
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.admin-check p {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* Thumb-sized targets on touch screens. */
+@media (pointer: coarse) {
+  .admin-nav a {
+    min-height: 44px;
+  }
+}
+
+/* ----------------------------- small screens ----------------------------- */
+
+@media (max-width: 900px) {
+  .admin-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* The sidebar becomes a top bar with a scrolling row of sections. */
+  .admin-side {
+    position: sticky;
+    z-index: 50;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 14px;
+    padding: 12px 16px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .admin-nav {
+    order: 3;
+    flex: 1 0 100%;
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 4px;
+    margin: 0 -16px;
+    padding: 0 16px 2px;
+  }
+
+  .admin-nav a {
+    flex: none;
+    padding: 8px 12px;
+  }
+
+  .admin-side-foot {
+    order: 2;
+    margin-left: auto;
+    flex-direction: row;
+    align-items: center;
+    padding: 0;
+    border-top: 0;
+  }
+
+  .admin-user,
+  .admin-site-link {
+    display: none;
+  }
+
+  /* Logo and the two buttons share one short row. */
+  .admin-brand {
+    padding: 0;
+  }
+
+  .admin-brand img {
+    height: 28px;
+  }
+
+  .admin-side-foot .row {
+    flex-wrap: nowrap;
+  }
+
+  .admin-side-foot .btn {
+    padding: 7px 11px;
+    white-space: nowrap;
+  }
+
+  .admin-page {
+    padding: 22px 16px 48px;
+  }
+
+  .admin-head h1 {
+    font-size: 24px;
+  }
+}
