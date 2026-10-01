@@ -1428,6 +1428,23 @@ function matchRoute(method, pathname) {
 export function createServer() {
   db.init();
 
+  // Render/free-host bootstrap: if ADMIN_EMAIL is set, promote that existing
+  // account to admin at startup. The account must already have been created
+  // through the normal sign-up flow, so its existing password remains in use.
+  // Anyone able to change server environment variables already has deployment
+  // administrator access, so this does not expose a browser-side escalation path.
+  const bootstrapAdminEmail = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+  if (bootstrapAdminEmail) {
+    const admin = db.setUserRole(bootstrapAdminEmail, "admin");
+    if (admin) {
+      logger.info("admin bootstrap applied", { email: admin.email });
+    } else {
+      logger.warn("ADMIN_EMAIL account not found; sign up with this email first, then redeploy", {
+        email: bootstrapAdminEmail,
+      });
+    }
+  }
+
   return http.createServer(async (req, res) => {
     applyCors(req, res);
     securityHeaders(res);
